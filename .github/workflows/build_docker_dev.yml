@@ -9,8 +9,6 @@ on:
       - 'docker-compose.yml'
       - 'docker-compose-warp.yml'
       - 'docs/**'
-      - '.github/workflows/build_docker_main.yml'
-      - '.github/workflows/build_docker_dev.yml'
   workflow_dispatch:
 
 permissions:
