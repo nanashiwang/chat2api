@@ -13,30 +13,38 @@ on:
       - '.github/workflows/build_docker_dev.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   main:
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Read the version from version.txt
         id: get_version
         run: |
           version=$(cat version.txt)
           echo "Current version: v$version"
-          echo "::set-output name=version::v$version"
+          echo "version=v$version" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push version tag
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version=${{ steps.get_version.outputs.version }}
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git tag "$version"
-          git push https://x-access-token:${GHCR_PAT}@github.com/lanqian528/chat2api.git "$version"
+          if git rev-parse "$version" >/dev/null 2>&1; then
+            echo "Tag $version already exists"
+          else
+            git tag "$version"
+            git push origin "$version"
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -50,11 +58,20 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: lanqian528/chat2api
+          images: |
+            nanashiwang/chat2api
+            ghcr.io/${{ github.repository_owner }}/chat2api
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ steps.get_version.outputs.version }}
