@@ -2,13 +2,14 @@ import asyncio
 import hashlib
 import json
 import random
+import time
 import uuid
 
 from fastapi import HTTPException
 from starlette.concurrency import run_in_threadpool
 
 from api.files import get_image_size, get_file_extension, determine_file_use_case
-from api.models import model_proxy
+from api.models import extract_model_slugs, get_response_model, resolve_request_model
 from chatgpt.authorization import get_req_token, verify_token
 from chatgpt.chatFormat import api_messages_to_chat, stream_response, format_not_stream_response, head_process_response
 from chatgpt.chatLimit import check_is_limit, handle_request_limit
@@ -29,10 +30,14 @@ from utils.configs import (
     auth_key,
     turnstile_solver_url,
     oai_language,
+    check_model,
 )
 
 
 class ChatService:
+    available_model_cache = {}
+    available_model_cache_ttl = 300
+
     def __init__(self, origin_token=None):
         # self.user_agent = random.choice(user_agents_list) if user_agents_list else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
         self.req_token = get_req_token(origin_token)
@@ -40,8 +45,68 @@ class ChatService:
         self.s = None
         self.ss = None
         self.ws = None
+        self.dynamic_model = False
 
-    async def set_dynamic_data(self, data):
+    def model_not_found(self):
+        return HTTPException(
+            status_code=404,
+            detail={
+                "message": f"The model `{self.origin_model}` does not exist or you do not have access to it.",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "model_not_found",
+            },
+        )
+
+    def get_model_cache_key(self):
+        token = self.req_token.split(",")[0] if self.req_token else "anon"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        account_id = self.account_id or "default"
+        return f"{self.host_url}:{account_id}:{token_hash}"
+
+    async def fetch_available_models(self):
+        cache_key = self.get_model_cache_key()
+        now = time.time()
+        cached = self.available_model_cache.get(cache_key)
+        if cached and now - cached["time"] < self.available_model_cache_ttl:
+            return cached["slugs"]
+
+        url = f"{self.host_url}/backend-api/models?history_and_training_disabled={str(self.history_disabled).lower()}"
+        headers = self.base_headers.copy()
+        r = await self.s.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            detail = r.text
+            if "application/json" in r.headers.get("Content-Type", ""):
+                detail = r.json().get("detail", r.json())
+            raise HTTPException(status_code=r.status_code, detail=detail)
+
+        models_payload = r.json()
+        model_slugs = extract_model_slugs(models_payload)
+        self.available_model_cache[cache_key] = {
+            "time": now,
+            "slugs": model_slugs,
+        }
+        logger.info(f"Available upstream models: {len(model_slugs)}")
+        return model_slugs
+
+    async def validate_model_access(self):
+        if self.gizmo_id:
+            return
+
+        if not self.access_token:
+            if self.req_model != "text-davinci-002-render-sha":
+                raise self.model_not_found()
+            return
+
+        if not (self.dynamic_model or check_model):
+            return
+
+        available_models = await self.fetch_available_models()
+        if self.req_model not in available_models:
+            logger.error(f"Model {self.req_model} not found in upstream models")
+            raise self.model_not_found()
+
+    async def resolve_auth_context(self):
         if self.req_token:
             req_len = len(self.req_token.split(","))
             if req_len == 1:
@@ -55,6 +120,7 @@ class ChatService:
             self.access_token = None
             self.account_id = None
 
+    async def initialize_request_context(self):
         self.fp = get_fp(self.req_token).copy()
         self.proxy_url = self.fp.pop("proxy_url", None)
         self.impersonate = self.fp.pop("impersonate", "safari15_3")
@@ -64,30 +130,11 @@ class ChatService:
         logger.info(f"Request UA: {self.user_agent}")
         logger.info(f"Request impersonate: {self.impersonate}")
 
-        self.data = data
-        await self.set_model()
-        if enable_limit and self.req_token:
-            limit_response = await handle_request_limit(self.req_token, self.req_model)
-            if limit_response:
-                raise HTTPException(status_code=429, detail=limit_response)
-
-        self.account_id = self.data.get('Chatgpt-Account-Id', self.account_id)
-        self.parent_message_id = self.data.get('parent_message_id')
-        self.conversation_id = self.data.get('conversation_id')
-        self.history_disabled = self.data.get('history_disabled', history_disabled)
-
-        self.api_messages = self.data.get("messages", [])
-        self.prompt_tokens = 0
-        self.max_tokens = self.data.get("max_tokens", 2147483647)
-        if not isinstance(self.max_tokens, int):
-            self.max_tokens = 2147483647
-
-        # self.proxy_url = random.choice(proxy_url_list) if proxy_url_list else None
-
         self.host_url = random.choice(chatgpt_base_url_list) if chatgpt_base_url_list else "https://chatgpt.com"
         self.ark0se_token_url = random.choice(ark0se_token_url_list) if ark0se_token_url_list else None
 
-        session_id = hashlib.md5(self.req_token.encode()).hexdigest()
+        session_source = self.req_token or "no-auth"
+        session_id = hashlib.md5(session_source.encode()).hexdigest()
         proxy_url = self.proxy_url.replace("{}", session_id) if self.proxy_url else None
         self.s = Client(proxy=proxy_url, impersonate=self.impersonate)
         if sentinel_proxy_url_list:
@@ -130,52 +177,36 @@ class ChatService:
         if auth_key:
             self.base_headers['authkey'] = auth_key
 
+    async def set_dynamic_data(self, data):
+        await self.resolve_auth_context()
+
+        self.data = data
+        await self.set_model()
+
+        self.account_id = self.data.get('Chatgpt-Account-Id', self.account_id)
+        self.parent_message_id = self.data.get('parent_message_id')
+        self.conversation_id = self.data.get('conversation_id')
+        self.history_disabled = self.data.get('history_disabled', history_disabled)
+
+        self.api_messages = self.data.get("messages", [])
+        self.prompt_tokens = 0
+        self.max_tokens = self.data.get("max_tokens", 2147483647)
+        if not isinstance(self.max_tokens, int):
+            self.max_tokens = 2147483647
+
+        await self.initialize_request_context()
         await get_dpl(self)
+        await self.validate_model_access()
+
+        if enable_limit and self.req_token:
+            limit_response = await handle_request_limit(self.req_token, self.req_model)
+            if limit_response:
+                raise HTTPException(status_code=429, detail=limit_response)
 
     async def set_model(self):
         self.origin_model = self.data.get("model", "gpt-3.5-turbo-0125")
-        self.resp_model = model_proxy.get(self.origin_model, self.origin_model)
-        if "gizmo" in self.origin_model or "g-" in self.origin_model:
-            self.gizmo_id = "g-" + self.origin_model.split("g-")[-1]
-        else:
-            self.gizmo_id = None
-
-        if "o3-mini-high" in self.origin_model:
-            self.req_model = "o3-mini-high"
-        elif "o3-mini-medium" in self.origin_model:
-            self.req_model = "o3-mini-medium"
-        elif "o3-mini-low" in self.origin_model:
-            self.req_model = "o3-mini-low"
-        elif "o3-mini" in self.origin_model:
-            self.req_model = "o3-mini"
-        elif "o3" in self.origin_model:
-            self.req_model = "o3"
-        elif "o1-preview" in self.origin_model:
-            self.req_model = "o1-preview"
-        elif "o1-pro" in self.origin_model:
-            self.req_model = "o1-pro"
-        elif "o1-mini" in self.origin_model:
-            self.req_model = "o1-mini"
-        elif "o1" in self.origin_model:
-            self.req_model = "o1"
-        elif "gpt-4.5o" in self.origin_model:
-            self.req_model = "gpt-4.5o"
-        elif "gpt-4o-canmore" in self.origin_model:
-            self.req_model = "gpt-4o-canmore"
-        elif "gpt-4o-mini" in self.origin_model:
-            self.req_model = "gpt-4o-mini"
-        elif "gpt-4o" in self.origin_model:
-            self.req_model = "gpt-4o"
-        elif "gpt-4-mobile" in self.origin_model:
-            self.req_model = "gpt-4-mobile"
-        elif "gpt-4" in self.origin_model:
-            self.req_model = "gpt-4"
-        elif "gpt-3.5" in self.origin_model:
-            self.req_model = "text-davinci-002-render-sha"
-        elif "auto" in self.origin_model:
-            self.req_model = "auto"
-        else:
-            self.req_model = "gpt-4o"
+        self.resp_model = get_response_model(self.origin_model)
+        self.req_model, self.gizmo_id, self.dynamic_model = resolve_request_model(self.origin_model)
 
     async def get_chat_requirements(self):
         if conversation_only:
@@ -194,15 +225,7 @@ class ChatService:
                 if self.persona != "chatgpt-paid":
                     if self.req_model == "gpt-4" or self.req_model == "o1-preview":
                         logger.error(f"Model {self.resp_model} not support for {self.persona}")
-                        raise HTTPException(
-                            status_code=404,
-                            detail={
-                                "message": f"The model `{self.origin_model}` does not exist or you do not have access to it.",
-                                "type": "invalid_request_error",
-                                "param": None,
-                                "code": "model_not_found",
-                            },
-                        )
+                        raise self.model_not_found()
 
                 turnstile = resp.get('turnstile', {})
                 turnstile_required = turnstile.get('required')

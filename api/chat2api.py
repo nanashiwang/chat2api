@@ -12,7 +12,7 @@ from app import app, templates, security_scheme
 from chatgpt.ChatService import ChatService
 from chatgpt.authorization import refresh_all_tokens
 from utils.Logger import logger
-from utils.configs import api_prefix, scheduled_refresh
+from utils.configs import api_prefix, scheduled_refresh, history_disabled
 from utils.retry import async_retry
 
 scheduler = AsyncIOScheduler()
@@ -44,9 +44,38 @@ async def to_send_conversation(request_data, req_token):
 
 async def process(request_data, req_token):
     chat_service = await to_send_conversation(request_data, req_token)
-    await chat_service.prepare_send_conversation()
-    res = await chat_service.send_conversation()
-    return chat_service, res
+    try:
+        await chat_service.prepare_send_conversation()
+        res = await chat_service.send_conversation()
+        return chat_service, res
+    except HTTPException as e:
+        await chat_service.close_client()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except Exception as e:
+        await chat_service.close_client()
+        logger.error(f"Server error, {str(e)}")
+        raise HTTPException(status_code=500, detail="Server error")
+
+
+def parse_bool_query(value, default):
+    if value is None:
+        return default
+    return str(value).lower() in ['true', '1', 't', 'y', 'yes']
+
+
+def format_models_response(model_slugs):
+    data = []
+    for model_slug in sorted(model_slugs):
+        data.append({
+            "id": model_slug,
+            "object": "model",
+            "created": 0,
+            "owned_by": "openai",
+        })
+    return {
+        "object": "list",
+        "data": data,
+    }
 
 
 @app.post(f"/{api_prefix}/v1/chat/completions" if api_prefix else "/v1/chat/completions")
@@ -74,6 +103,30 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
         await chat_service.close_client()
         logger.error(f"Server error, {str(e)}")
         raise HTTPException(status_code=500, detail="Server error")
+
+
+@app.get(f"/{api_prefix}/v1/models" if api_prefix else "/v1/models")
+async def list_models(request: Request, credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
+    chat_service = ChatService(credentials.credentials)
+    try:
+        await chat_service.resolve_auth_context()
+        chat_service.history_disabled = parse_bool_query(
+            request.query_params.get("history_disabled", request.query_params.get("history_and_training_disabled")),
+            history_disabled,
+        )
+        request_account_id = request.headers.get("ChatGPT-Account-ID") or request.headers.get("Chatgpt-Account-Id")
+        if request_account_id:
+            chat_service.account_id = request_account_id
+        await chat_service.initialize_request_context()
+        model_slugs = await chat_service.fetch_available_models()
+        return JSONResponse(format_models_response(model_slugs), media_type="application/json")
+    except HTTPException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except Exception as e:
+        logger.error(f"Server error, {str(e)}")
+        raise HTTPException(status_code=500, detail="Server error")
+    finally:
+        await chat_service.close_client()
 
 
 @app.get(f"/{api_prefix}/tokens" if api_prefix else "/tokens", response_class=HTMLResponse)

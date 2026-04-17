@@ -323,8 +323,13 @@ async def chatgpt_reverse_proxy(request: Request, path: str):
                     response = Response(content=content, headers=rheaders,
                                         status_code=r.status_code, background=background)
                 return response
+        except HTTPException as e:
+            await client.close()
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
         except Exception as e:
             await client.close()
+            logger.error(f"Reverse proxy failed for {path}: {str(e)}")
+            raise HTTPException(status_code=502, detail="Upstream request failed")
     except HTTPException as e:
         raise e
     except Exception as e:

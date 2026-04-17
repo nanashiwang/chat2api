@@ -40,11 +40,15 @@ redirect_paths = ["auth/logout"]
 chatgpt_paths = ["c/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"]
 
 
+def has_direct_access_token(token: str) -> bool:
+    return len(token) == 45 or token.startswith("eyJhbGciOi")
+
+
 @app.get("/backend-api/accounts/check/v4-2023-04-27")
 async def check_account(request: Request):
-    token = request.headers.get("Authorization").replace("Bearer ", "")
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
     check_account_response = await chatgpt_reverse_proxy(request, "backend-api/accounts/check/v4-2023-04-27")
-    if len(token) == 45 or token.startswith("eyJhbGciOi"):
+    if has_direct_access_token(token):
         return check_account_response
     else:
         check_account_str = check_account_response.body.decode('utf-8')
@@ -62,7 +66,7 @@ async def check_account(request: Request):
 @app.get("/backend-api/gizmos/bootstrap")
 async def get_gizmos_bootstrap(request: Request):
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if len(token) == 45 or token.startswith("eyJhbGciOi"):
+    if has_direct_access_token(token):
         return await chatgpt_reverse_proxy(request, "backend-api/gizmos/bootstrap")
     else:
         return {"gizmos": []}
@@ -71,7 +75,7 @@ async def get_gizmos_bootstrap(request: Request):
 @app.get("/backend-api/gizmos/pinned")
 async def get_gizmos_pinned(request: Request):
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if len(token) == 45 or token.startswith("eyJhbGciOi"):
+    if has_direct_access_token(token):
         return await chatgpt_reverse_proxy(request, "backend-api/gizmos/pinned")
     else:
         return {"items": [], "cursor": None}
@@ -80,7 +84,7 @@ async def get_gizmos_pinned(request: Request):
 @app.get("/public-api/gizmos/discovery/recent")
 async def get_gizmos_discovery_recent(request: Request):
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if len(token) == 45 or token.startswith("eyJhbGciOi"):
+    if has_direct_access_token(token):
         return await chatgpt_reverse_proxy(request, "public-api/gizmos/discovery/recent")
     else:
         return {
@@ -98,7 +102,7 @@ async def get_gizmos_discovery_recent(request: Request):
 @app.get("/backend-api/gizmos/snorlax/sidebar")
 async def get_gizmos_snorlax_sidebar(request: Request):
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if len(token) == 45 or token.startswith:
+    if has_direct_access_token(token):
         return await chatgpt_reverse_proxy(request, "backend-api/gizmos/snorlax/sidebar")
     else:
         return {"items": [], "cursor": None}
@@ -107,7 +111,7 @@ async def get_gizmos_snorlax_sidebar(request: Request):
 @app.post("/backend-api/gizmos/snorlax/upsert")
 async def get_gizmos_snorlax_upsert(request: Request):
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if len(token) == 45 or token.startswith:
+    if has_direct_access_token(token):
         return await chatgpt_reverse_proxy(request, "backend-api/gizmos/snorlax/upsert")
     else:
         raise HTTPException(status_code=403, detail="Forbidden")

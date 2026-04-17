@@ -29,3 +29,75 @@ model_system_fingerprint = {
     "gpt-4o-2024-05-13": ["fp_3aa7262c27"],
     "gpt-4o-mini-2024-07-18": ["fp_c9aa9c0491"]
 }
+
+MODEL_REQUEST_RULES = (
+    ("o3-mini-high", "o3-mini-high"),
+    ("o3-mini-medium", "o3-mini-medium"),
+    ("o3-mini-low", "o3-mini-low"),
+    ("o3-mini", "o3-mini"),
+    ("o3", "o3"),
+    ("o1-preview", "o1-preview"),
+    ("o1-pro", "o1-pro"),
+    ("o1-mini", "o1-mini"),
+    ("o1", "o1"),
+    ("gpt-4.5o", "gpt-4.5o"),
+    ("gpt-4o-canmore", "gpt-4o-canmore"),
+    ("gpt-4o-mini", "gpt-4o-mini"),
+    ("gpt-4o", "gpt-4o"),
+    ("gpt-4-mobile", "gpt-4-mobile"),
+    ("gpt-4", "gpt-4"),
+    ("gpt-3.5", "text-davinci-002-render-sha"),
+    ("auto", "auto"),
+)
+
+
+def get_response_model(origin_model):
+    return model_proxy.get(origin_model, origin_model)
+
+
+def match_model_family(origin_model, alias):
+    return origin_model == alias or origin_model.startswith(f"{alias}-")
+
+
+def resolve_request_model(origin_model):
+    origin_model = (origin_model or "gpt-3.5-turbo-0125").strip()
+    base_model = origin_model
+    gizmo_id = None
+
+    if "-gizmo-g-" in origin_model:
+        base_model, _, gizmo_suffix = origin_model.partition("-gizmo-")
+        gizmo_id = gizmo_suffix
+    elif origin_model.startswith("g-"):
+        gizmo_id = origin_model
+        base_model = "gpt-4o"
+
+    for alias, target in MODEL_REQUEST_RULES:
+        if match_model_family(base_model, alias):
+            return target, gizmo_id, False
+
+    return base_model, gizmo_id, True
+
+
+def extract_model_slugs(models_payload):
+    slugs = set()
+    model_items = models_payload.get("models", [])
+    if isinstance(model_items, dict):
+        model_items = model_items.values()
+
+    for model in model_items:
+        if not isinstance(model, dict):
+            continue
+
+        for key in ("slug", "id", "model_slug"):
+            value = model.get(key)
+            if isinstance(value, str) and value:
+                slugs.add(value)
+
+        nested_model = model.get("model")
+        if isinstance(nested_model, dict):
+            for key in ("slug", "id", "model_slug"):
+                value = nested_model.get(key)
+                if isinstance(value, str) and value:
+                    slugs.add(value)
+
+    return slugs
