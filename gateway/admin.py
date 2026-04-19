@@ -11,6 +11,7 @@ from utils.routing import (
     build_group_assignments,
     get_dashboard_payload,
     get_routing_config,
+    remove_account_binding,
     save_routing_config,
     sync_bindings_to_fp,
     update_single_binding,
@@ -248,6 +249,40 @@ async def routing_admin_import_accounts(request: Request):
     )
 
 
+async def routing_admin_delete_account(request: Request):
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    token = (body.get("token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token is required")
+
+    if token not in globals.token_list:
+        raise HTTPException(status_code=404, detail="token not found")
+
+    globals.token_list[:] = [item for item in globals.token_list if item != token]
+    with open(globals.TOKENS_FILE, "w", encoding="utf-8") as f:
+        for item in globals.token_list:
+            f.write(item + "\n")
+
+    remove_account_binding(token)
+    if token in globals.error_token_list:
+        globals.error_token_list[:] = [item for item in globals.error_token_list if item != token]
+        with open(globals.ERROR_TOKENS_FILE, "w", encoding="utf-8") as f:
+            for item in globals.error_token_list:
+                f.write(item + "\n")
+
+    return JSONResponse(
+        {
+            "status": "success",
+            "message": "账号已删除",
+        }
+    )
+
+
 async def routing_admin_test_proxy(request: Request):
     require_admin_auth(request)
     try:
@@ -301,6 +336,7 @@ app.add_api_route("/admin/login", routing_admin_login_submit, methods=["POST"])
 app.add_api_route("/admin/logout", routing_admin_logout, methods=["POST"])
 app.add_api_route("/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
+app.add_api_route("/admin/routing/accounts/delete", routing_admin_delete_account, methods=["POST"])
 app.add_api_route("/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])
 
 if api_prefix:
@@ -312,4 +348,5 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/logout", routing_admin_logout, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/routing/accounts/delete", routing_admin_delete_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])

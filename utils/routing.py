@@ -134,6 +134,36 @@ def update_single_binding(token, proxy_name, proxy_url, group_name=None):
     return config["bindings"][token]
 
 
+def remove_account_binding(token):
+    config = get_routing_config()
+    removed_binding = config.get("bindings", {}).pop(token, None)
+
+    grouped_rules = {}
+    for binding_token, binding in config.get("bindings", {}).items():
+        group_name = binding.get("group") or binding.get("proxy_name") or "Ungrouped"
+        proxy_name = binding.get("proxy_name", "-")
+        proxy_url = binding.get("proxy_url", "")
+        rule = grouped_rules.setdefault(group_name, {
+            "id": f"group-{len(grouped_rules) + 1}",
+            "name": group_name,
+            "proxy_name": proxy_name,
+            "proxy_url": proxy_url,
+            "size": 0,
+            "strategy": "fixed",
+            "status": "enabled",
+        })
+        rule["size"] += 1
+    config["groups"] = list(grouped_rules.values())
+    save_routing_config(config)
+
+    if token in globals.fp_map:
+        globals.fp_map.pop(token, None)
+        with open(globals.FP_FILE, "w", encoding="utf-8") as f:
+            json.dump(globals.fp_map, f, indent=2, ensure_ascii=False)
+
+    return removed_binding
+
+
 def get_bound_proxy(req_token):
     binding = get_routing_config().get("bindings", {}).get(req_token)
     if binding:

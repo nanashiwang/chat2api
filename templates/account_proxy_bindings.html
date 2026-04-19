@@ -14,6 +14,7 @@
             const logoutApi = `${basePath}/admin/logout`;
             const bindApi = `${basePath}/admin/routing/account-bind`;
             const importAccountsApi = `${basePath}/admin/routing/accounts/import`;
+            const deleteAccountApi = `${basePath}/admin/routing/accounts/delete`;
             const testProxyApi = `${basePath}/admin/routing/test-proxy`;
 
             const summaryGrid = document.getElementById('summaryGrid');
@@ -107,7 +108,10 @@
                         <td class="py-4">${row.group}</td>
                         <td class="py-4 text-slate-500">${row.updated_at || '-'}</td>
                         <td class="py-4">
-                            <button class="bind-account-button px-3 py-2 rounded-xl bg-slate-900 text-white text-xs" data-token="${row.token}">保存</button>
+                            <div class="flex gap-2">
+                                <button class="bind-account-button px-3 py-2 rounded-xl bg-slate-900 text-white text-xs" data-token="${row.token}">保存</button>
+                                <button class="delete-account-button px-3 py-2 rounded-xl bg-red-50 text-red-700 border border-red-200 text-xs" data-token="${row.token}">删除</button>
+                            </div>
                         </td>
                     </tr>
                 `).join('');
@@ -199,24 +203,45 @@
 
             accountsTable.addEventListener('click', async (event) => {
                 const button = event.target.closest('.bind-account-button');
-                if (!button) return;
-                const token = button.dataset.token;
-                const select = accountsTable.querySelector(`.account-proxy-select[data-token="${token}"]`);
-                const proxyUrl = select.value;
-                const proxy = proxyOptions.find((item) => item.proxy_url === proxyUrl);
-                const response = await fetch(bindApi, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        token,
-                        proxy_url: proxyUrl,
-                        proxy_name: proxy ? proxy.name : 'Custom Proxy',
-                    }),
-                });
-                const result = await response.json();
-                statusText.textContent = response.ok ? '账号绑定已更新' : (result.detail || '更新失败');
-                if (response.ok) {
-                    await loadDashboard();
+                const deleteButton = event.target.closest('.delete-account-button');
+
+                if (button) {
+                    const token = button.dataset.token;
+                    const select = accountsTable.querySelector(`.account-proxy-select[data-token="${token}"]`);
+                    const proxyUrl = select.value;
+                    const proxy = proxyOptions.find((item) => item.proxy_url === proxyUrl);
+                    const response = await fetch(bindApi, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            token,
+                            proxy_url: proxyUrl,
+                            proxy_name: proxy ? proxy.name : 'Custom Proxy',
+                        }),
+                    });
+                    const result = await response.json();
+                    statusText.textContent = response.ok ? '账号绑定已更新' : (result.detail || '更新失败');
+                    if (response.ok) {
+                        await loadDashboard();
+                    }
+                    return;
+                }
+
+                if (deleteButton) {
+                    const token = deleteButton.dataset.token;
+                    if (!window.confirm('确认删除该账号吗？这会同时移除固定绑定配置。')) {
+                        return;
+                    }
+                    const response = await fetch(deleteAccountApi, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token }),
+                    });
+                    const result = await response.json();
+                    statusText.textContent = response.ok ? result.message : (result.detail || '删除失败');
+                    if (response.ok) {
+                        await loadDashboard();
+                    }
                 }
             });
 
