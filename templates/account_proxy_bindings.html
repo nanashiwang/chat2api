@@ -26,6 +26,7 @@
             const logoutButton = document.getElementById('logoutButton');
             const statusText = document.getElementById('statusText');
             let proxyOptions = [];
+            const navLinks = Array.from(document.querySelectorAll('[data-nav-target]'));
 
             function parseProxyLines(raw) {
                 return raw
@@ -191,28 +192,57 @@
                 form.submit();
             });
 
+            navLinks.forEach((link) => {
+                link.addEventListener('click', () => {
+                    const targetId = link.dataset.navTarget;
+                    const target = document.getElementById(targetId);
+                    if (!target) return;
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                });
+            });
+
+            const sectionObserver = new IntersectionObserver((entries) => {
+                const visibleEntry = entries
+                    .filter((entry) => entry.isIntersecting)
+                    .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+                if (!visibleEntry) return;
+                navLinks.forEach((link) => {
+                    const active = link.dataset.navTarget === visibleEntry.target.id;
+                    link.classList.toggle('bg-slate-800', active);
+                    link.classList.toggle('border-slate-700', !active);
+                    link.classList.toggle('bg-slate-900/60', !active);
+                });
+            }, {
+                rootMargin: '-25% 0px -55% 0px',
+                threshold: [0.2, 0.5, 0.8],
+            });
+
+            document.querySelectorAll('[data-admin-section]').forEach((section) => {
+                sectionObserver.observe(section);
+            });
+
             loadDashboard().catch((error) => {
                 statusText.textContent = `加载失败: ${error.message}`;
             });
         });
     </script>
 </head>
-<body class="min-h-screen bg-slate-100 text-slate-900">
+<body class="min-h-screen bg-slate-100 text-slate-900 scroll-smooth">
     <div class="flex min-h-screen">
         <aside class="w-72 min-h-screen bg-slate-900 text-white p-6">
             <div class="text-2xl font-bold mb-8">Chat2API Admin</div>
             <nav class="space-y-2 text-sm">
-                <div class="px-4 py-3 rounded-2xl bg-slate-800">总览 Dashboard</div>
-                <div class="px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700">账号管理 Accounts</div>
-                <div class="px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700">IP 管理 IP Pool</div>
-                <div class="px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700">绑定规则 Routing</div>
+                <button type="button" data-nav-target="dashboard-section" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-800 transition">总览 Dashboard</button>
+                <button type="button" data-nav-target="accounts-section" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition">账号管理 Accounts</button>
+                <button type="button" data-nav-target="proxy-section" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition">IP 管理 IP Pool</button>
+                <button type="button" data-nav-target="routing-section" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition">绑定规则 Routing</button>
             </nav>
         </aside>
 
         <main class="flex-1 p-8 space-y-8">
-            <section>
+            <section id="dashboard-section" data-admin-section>
                 <div class="flex items-center justify-between mb-4">
-                <div>
+                    <div>
                         <h1 class="text-3xl font-bold">总览 Dashboard</h1>
                         <p class="text-slate-600 mt-1">固定代理分组后台，支持按组把账号批量绑定到指定出口。</p>
                     </div>
@@ -241,7 +271,7 @@
             </section>
 
             <section class="grid lg:grid-cols-2 gap-6">
-                <div class="bg-white rounded-3xl shadow-sm p-6">
+                <div id="proxy-section" data-admin-section class="bg-white rounded-3xl shadow-sm p-6">
                     <div class="flex items-center justify-between mb-4">
                         <div>
                             <h2 class="text-xl font-semibold">代理配置 IP Pool</h2>
@@ -261,7 +291,7 @@
                     </div>
                 </div>
 
-                <div class="bg-white rounded-3xl shadow-sm p-6">
+                <div id="routing-section" data-admin-section class="bg-white rounded-3xl shadow-sm p-6">
                     <div class="flex items-center justify-between mb-4">
                         <div>
                             <h2 class="text-xl font-semibold">绑定规则 Routing</h2>
@@ -285,7 +315,7 @@
                 </div>
             </section>
 
-            <section class="bg-white rounded-3xl shadow-sm p-6">
+            <section id="accounts-section" data-admin-section class="bg-white rounded-3xl shadow-sm p-6">
                 <div class="flex items-center justify-between mb-4">
                     <div>
                         <h2 class="text-xl font-semibold">账号管理 Accounts</h2>
