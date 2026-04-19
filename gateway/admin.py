@@ -1,3 +1,4 @@
+import json
 import time
 from collections import defaultdict, deque
 
@@ -9,6 +10,7 @@ from utils.Client import Client
 from utils.configs import admin_password, api_prefix, authorization_list
 from utils.routing import (
     build_group_assignments,
+    detect_token_type,
     get_dashboard_payload,
     get_routing_config,
     remove_account_binding,
@@ -17,6 +19,7 @@ from utils.routing import (
     update_single_binding,
 )
 import utils.globals as globals
+from chatgpt.refreshToken import rt2ac
 
 ADMIN_COOKIE_NAME = "admin_auth"
 ADMIN_COOKIE_MAX_AGE = 8 * 60 * 60
@@ -77,6 +80,15 @@ def is_admin_authorized(request: Request):
     header_token = request.headers.get("authorization", "").replace("Bearer ", "").strip()
     token = header_token or cookie_token
     return bool(token and token in get_admin_secrets())
+
+
+def get_current_admin_token(request: Request):
+    cookie_token = request.cookies.get(ADMIN_COOKIE_NAME, "")
+    header_token = request.headers.get("authorization", "").replace("Bearer ", "").strip()
+    token = header_token or cookie_token
+    if token and token in get_admin_secrets():
+        return token
+    return ""
 
 
 def require_admin_auth(request: Request):
@@ -148,6 +160,7 @@ async def routing_admin_page(request: Request):
         {
             "request": request,
             "api_prefix": api_prefix,
+            "admin_token": get_current_admin_token(request),
         },
     )
 
@@ -269,6 +282,10 @@ async def routing_admin_delete_account(request: Request):
             f.write(item + "\n")
 
     remove_account_binding(token)
+    if token in globals.refresh_map:
+        globals.refresh_map.pop(token, None)
+        with open(globals.REFRESH_MAP_FILE, "w", encoding="utf-8") as f:
+            json.dump(globals.refresh_map, f, indent=4, ensure_ascii=False)
     if token in globals.error_token_list:
         globals.error_token_list[:] = [item for item in globals.error_token_list if item != token]
         with open(globals.ERROR_TOKENS_FILE, "w", encoding="utf-8") as f:
@@ -279,6 +296,37 @@ async def routing_admin_delete_account(request: Request):
         {
             "status": "success",
             "message": "账号已删除",
+        }
+    )
+
+
+async def routing_admin_refresh_account(request: Request):
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    token = (body.get("token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token is required")
+    if token not in globals.token_list:
+        raise HTTPException(status_code=404, detail="token not found")
+    if detect_token_type(token) != "RefreshToken":
+        raise HTTPException(status_code=400, detail="Only RefreshToken supports manual refresh")
+
+    try:
+        access_token = await rt2ac(token, force_refresh=True)
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    refresh_info = globals.refresh_map.get(token, {})
+    return JSONResponse(
+        {
+            "status": "success",
+            "message": "RefreshToken 刷新成功",
+            "token_masked": f"{access_token[:6]}...{access_token[-4:]}" if access_token else "",
+            "refresh_updated_at": refresh_info.get("last_success_at", refresh_info.get("timestamp", 0)),
         }
     )
 
@@ -337,6 +385,7 @@ app.add_api_route("/admin/logout", routing_admin_logout, methods=["POST"])
 app.add_api_route("/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/delete", routing_admin_delete_account, methods=["POST"])
+app.add_api_route("/admin/routing/accounts/refresh", routing_admin_refresh_account, methods=["POST"])
 app.add_api_route("/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])
 
 if api_prefix:
@@ -349,4 +398,5 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/delete", routing_admin_delete_account, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/routing/accounts/refresh", routing_admin_refresh_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])

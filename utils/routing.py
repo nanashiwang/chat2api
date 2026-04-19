@@ -17,6 +17,22 @@ def mask_token(token):
     return f"{token[:6]}...{token[-4:]}"
 
 
+def detect_token_type(token):
+    if not token:
+        return "Unknown"
+    if token.startswith("eyJhbGciOi") or token.startswith("fk-"):
+        return "AccessToken"
+    if len(token) == 45:
+        return "RefreshToken"
+    return "CustomToken"
+
+
+def format_refresh_time(timestamp):
+    if not timestamp:
+        return "-"
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def get_routing_config():
     config = globals.routing_config or {}
     config.setdefault("proxies", [])
@@ -210,14 +226,32 @@ def get_dashboard_payload():
         status = "异常" if token in error_tokens else "正常"
         proxy_name = binding.get("proxy_name", "-")
         group_name = binding.get("group", "-")
+        token_type = detect_token_type(token)
+        refresh_info = globals.refresh_map.get(token, {}) if token_type == "RefreshToken" else {}
+        refresh_status = "-"
+        if token_type == "RefreshToken":
+            if token in error_tokens:
+                refresh_status = "刷新异常"
+            elif refresh_info.get("last_success_at") or refresh_info.get("timestamp"):
+                refresh_status = "已刷新"
+            else:
+                refresh_status = "待刷新"
         accounts.append({
             "id": f"acct-{index:03d}",
             "token": token,
             "token_masked": mask_token(token),
+            "token_type": token_type,
             "status": status,
             "proxy_name": proxy_name,
             "group": group_name,
             "updated_at": binding.get("updated_at") or globals.fp_map.get(token, {}).get("updated_at") or "-",
+            "refresh_status": refresh_status,
+            "refresh_updated_at": format_refresh_time(
+                refresh_info.get("last_success_at") or refresh_info.get("timestamp")
+            ),
+            "refresh_error": refresh_info.get("last_error", ""),
+            "refresh_fail_count": refresh_info.get("fail_count", 0),
+            "can_refresh": token_type == "RefreshToken",
         })
 
     alerts = []
@@ -228,6 +262,18 @@ def get_dashboard_payload():
         alerts.append(f"还有 {unbound_count} 个账号未绑定固定代理。")
     if not alerts:
         alerts.append("当前未发现异常告警。")
+
+    refresh_token_count = len([token for token in tokens if detect_token_type(token) == "RefreshToken"])
+    stale_refresh_count = len([
+        token for token in tokens
+        if detect_token_type(token) == "RefreshToken"
+        and not globals.refresh_map.get(token, {}).get("last_success_at")
+        and not globals.refresh_map.get(token, {}).get("timestamp")
+    ])
+    if refresh_token_count:
+        alerts.append(f"当前共导入 {refresh_token_count} 个 RefreshToken。")
+    if stale_refresh_count:
+        alerts.append(f"其中有 {stale_refresh_count} 个 RefreshToken 还没有成功刷新过。")
 
     return {
         "summary": {

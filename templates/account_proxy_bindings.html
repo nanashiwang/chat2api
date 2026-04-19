@@ -8,6 +8,7 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const apiPrefix = "{{ api_prefix }}";
+            const adminToken = {{ admin_token|tojson }};
             const basePath = apiPrefix === "None" ? "" : `/${apiPrefix}`;
             const dataApi = `${basePath}/admin/routing/data`;
             const saveApi = `${basePath}/admin/routing/save`;
@@ -15,6 +16,7 @@
             const bindApi = `${basePath}/admin/routing/account-bind`;
             const importAccountsApi = `${basePath}/admin/routing/accounts/import`;
             const deleteAccountApi = `${basePath}/admin/routing/accounts/delete`;
+            const refreshAccountApi = `${basePath}/admin/routing/accounts/refresh`;
             const testProxyApi = `${basePath}/admin/routing/test-proxy`;
 
             const summaryGrid = document.getElementById('summaryGrid');
@@ -96,7 +98,10 @@
                 accountsTable.innerHTML = accounts.map((row) => `
                     <tr class="border-b border-slate-100">
                         <td class="py-4 font-medium">${row.id}</td>
-                        <td class="py-4 font-mono text-xs">${row.token_masked}</td>
+                        <td class="py-4 font-mono text-xs break-all select-all">${row.token}</td>
+                        <td class="py-4">
+                            <span class="px-2 py-1 rounded-full text-xs ${row.token_type === 'RefreshToken' ? 'bg-blue-100 text-blue-700' : row.token_type === 'AccessToken' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700'}">${row.token_type}</span>
+                        </td>
                         <td class="py-4">${row.status}</td>
                         <td class="py-4">
                             <select class="account-proxy-select px-3 py-2 rounded-xl border border-slate-200 text-sm" data-token="${row.token}">
@@ -108,8 +113,14 @@
                         <td class="py-4">${row.group}</td>
                         <td class="py-4 text-slate-500">${row.updated_at || '-'}</td>
                         <td class="py-4">
+                            <div class="text-sm">${row.refresh_status || '-'}</div>
+                            <div class="text-xs text-slate-500">${row.refresh_updated_at || '-'}</div>
+                            ${row.refresh_error ? `<div class="text-xs text-red-600 mt-1 max-w-60 truncate" title="${row.refresh_error}">${row.refresh_error}</div>` : ''}
+                        </td>
+                        <td class="py-4">
                             <div class="flex gap-2">
                                 <button class="bind-account-button px-3 py-2 rounded-xl bg-slate-900 text-white text-xs" data-token="${row.token}">保存</button>
+                                ${row.can_refresh ? `<button class="refresh-account-button px-3 py-2 rounded-xl bg-blue-50 text-blue-700 border border-blue-200 text-xs" data-token="${row.token}">立即刷新</button>` : ''}
                                 <button class="delete-account-button px-3 py-2 rounded-xl bg-red-50 text-red-700 border border-red-200 text-xs" data-token="${row.token}">删除</button>
                             </div>
                         </td>
@@ -137,10 +148,10 @@
 
             function buildTestCommands(payload) {
                 const origin = window.location.origin;
-                const authPlaceholder = '请替换为你的 AUTHORIZATION';
+                const authToken = adminToken || '请替换为你的 AUTHORIZATION';
                 const model = (payload && payload.accounts && payload.accounts.length) ? 'gpt-5' : 'gpt-5';
-                modelsTestCommand.textContent = `curl --location '${origin}${basePath}/v1/models' \\\n  --header 'Authorization: Bearer ${authPlaceholder}'`;
-                apiTestCommand.textContent = `curl --location '${origin}${basePath}/v1/chat/completions' \\\n  --header 'Content-Type: application/json' \\\n  --header 'Authorization: Bearer ${authPlaceholder}' \\\n  --data '{\n  "model": "${model}",\n  "messages": [\n    {"role": "user", "content": "你好，请回复 test ok"}\n  ],\n  "stream": false\n}'`;
+                modelsTestCommand.textContent = `curl --location '${origin}${basePath}/v1/models' \\\n  --header 'Authorization: Bearer ${authToken}'`;
+                apiTestCommand.textContent = `curl --location '${origin}${basePath}/v1/chat/completions' \\\n  --header 'Content-Type: application/json' \\\n  --header 'Authorization: Bearer ${authToken}' \\\n  --data '{\n  "model": "${model}",\n  "messages": [\n    {"role": "user", "content": "你好，请回复 test ok"}\n  ],\n  "stream": false\n}'`;
             }
 
             function getFirstConfiguredProxy() {
@@ -150,7 +161,25 @@
 
             async function copyText(content) {
                 try {
-                    await navigator.clipboard.writeText(content);
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(content);
+                    } else {
+                        const textarea = document.createElement('textarea');
+                        textarea.value = content;
+                        textarea.setAttribute('readonly', '');
+                        textarea.style.position = 'fixed';
+                        textarea.style.top = '0';
+                        textarea.style.left = '0';
+                        textarea.style.opacity = '0';
+                        document.body.appendChild(textarea);
+                        textarea.focus();
+                        textarea.select();
+                        const copied = document.execCommand('copy');
+                        document.body.removeChild(textarea);
+                        if (!copied) {
+                            throw new Error('浏览器不支持自动复制');
+                        }
+                    }
                     statusText.textContent = '测试命令已复制';
                 } catch (error) {
                     statusText.textContent = `复制失败: ${error.message}`;
@@ -203,6 +232,7 @@
 
             accountsTable.addEventListener('click', async (event) => {
                 const button = event.target.closest('.bind-account-button');
+                const refreshButton = event.target.closest('.refresh-account-button');
                 const deleteButton = event.target.closest('.delete-account-button');
 
                 if (button) {
@@ -221,6 +251,24 @@
                     });
                     const result = await response.json();
                     statusText.textContent = response.ok ? '账号绑定已更新' : (result.detail || '更新失败');
+                    if (response.ok) {
+                        await loadDashboard();
+                    }
+                    return;
+                }
+
+                if (refreshButton) {
+                    const token = refreshButton.dataset.token;
+                    refreshButton.disabled = true;
+                    statusText.textContent = '正在刷新账号...';
+                    const response = await fetch(refreshAccountApi, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token }),
+                    });
+                    const result = await response.json();
+                    refreshButton.disabled = false;
+                    statusText.textContent = response.ok ? result.message : (result.detail || '刷新失败');
                     if (response.ok) {
                         await loadDashboard();
                     }
@@ -400,7 +448,7 @@
                 <div class="flex items-center justify-between mb-4">
                     <div>
                         <h2 class="text-xl font-semibold">测试样例</h2>
-                        <p class="text-sm text-slate-500 mt-1">一键复制模型探测和聊天测试命令；只需把授权码替换成你配置的 `AUTHORIZATION`。</p>
+                        <p class="text-sm text-slate-500 mt-1">一键复制模型探测和聊天测试命令；已直接填入当前登录授权码。</p>
                     </div>
                 </div>
                 <div class="grid lg:grid-cols-2 gap-6">
@@ -423,14 +471,14 @@
 
             <section class="grid lg:grid-cols-2 gap-6">
                 <div id="proxy-section" data-admin-section class="bg-white rounded-3xl shadow-sm p-6">
-                    <div class="flex items-center justify-between mb-4">
-                        <div>
-                            <h2 class="text-xl font-semibold">代理配置 IP Pool</h2>
-                            <p class="text-sm text-slate-500 mt-1">一行一个代理，格式支持 <code>名称 | socks5://host:port</code></p>
-                        </div>
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold">代理配置 IP Pool</h2>
+                        <p class="text-sm text-slate-500 mt-1">一行一个代理，格式支持 <code>名称 | socks5h://host:port</code>，远端域名解析建议优先使用 <code>socks5h://</code></p>
+                    </div>
                         <button id="testProxyButton" class="px-4 py-2 rounded-2xl bg-white border border-slate-200 text-sm">测试首条代理</button>
                     </div>
-                    <textarea id="proxyInput" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="IP-A | socks5://10.0.0.1:7890&#10;IP-B | socks5://10.0.0.2:7890"></textarea>
+                    <textarea id="proxyInput" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="IP-A | socks5h://10.0.0.1:7890&#10;IP-B | socks5h://10.0.0.2:7890"></textarea>
                     <div id="proxyTestResult" class="mt-3 text-sm text-slate-500"></div>
                     <div class="grid md:grid-cols-3 gap-3 mt-4">
                         <div class="md:col-span-1">
@@ -478,15 +526,17 @@
                 <div class="overflow-x-auto">
                     <table class="w-full text-sm">
                         <thead>
-                            <tr class="text-left border-b border-slate-200">
-                                <th class="py-3">账号</th>
-                                <th class="py-3">Token</th>
-                                <th class="py-3">状态</th>
-                                <th class="py-3">绑定 IP</th>
-                                <th class="py-3">分组</th>
-                                <th class="py-3">最近更新</th>
-                                <th class="py-3">操作</th>
-                            </tr>
+                                <tr class="text-left border-b border-slate-200">
+                                    <th class="py-3">账号</th>
+                                    <th class="py-3">Token</th>
+                                    <th class="py-3">类型</th>
+                                    <th class="py-3">状态</th>
+                                    <th class="py-3">绑定 IP</th>
+                                    <th class="py-3">分组</th>
+                                    <th class="py-3">最近更新</th>
+                                    <th class="py-3">刷新状态</th>
+                                    <th class="py-3">操作</th>
+                                </tr>
                         </thead>
                         <tbody id="accountsTable"></tbody>
                     </table>
@@ -500,11 +550,11 @@
             <div class="flex items-center justify-between mb-4">
                 <div>
                     <h3 class="text-xl font-semibold">新增账号</h3>
-                    <p class="text-sm text-slate-500 mt-1">一行一个 token，支持批量导入；导入后如需固定分组，请重新发布绑定规则。</p>
+                    <p class="text-sm text-slate-500 mt-1">一行一个 token，支持 AccessToken / RefreshToken 批量导入；如果是 RefreshToken，导入后可在列表里手动点“立即刷新”。</p>
                 </div>
                 <button id="importModalClose" class="px-3 py-2 rounded-xl bg-slate-100 text-sm">关闭</button>
             </div>
-            <textarea id="importAccountsTextarea" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="rt-xxx1&#10;rt-xxx2&#10;rt-xxx3"></textarea>
+            <textarea id="importAccountsTextarea" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="eyJhbGciOi...&#10;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></textarea>
             <div class="flex justify-end gap-3 mt-4">
                 <button id="importSubmitButton" class="px-5 py-3 rounded-2xl bg-slate-900 text-white">导入账号</button>
             </div>
