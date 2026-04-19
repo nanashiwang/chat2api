@@ -31,6 +31,8 @@ from utils.configs import (
     turnstile_solver_url,
     oai_language,
     check_model,
+    chat_requirements_timeout,
+    chat_request_timeout,
 )
 
 
@@ -217,7 +219,7 @@ class ChatService:
             config = get_config(self.user_agent, self.req_token)
             p = get_requirements_token(config)
             data = {'p': p}
-            r = await self.ss.post(url, headers=headers, json=data, timeout=5)
+            r = await self.ss.post(url, headers=headers, json=data, timeout=chat_requirements_timeout)
             if r.status_code == 200:
                 resp = r.json()
 
@@ -372,7 +374,13 @@ class ChatService:
         try:
             url = f'{self.base_url}/conversation'
             stream = self.data.get("stream", False)
-            r = await self.s.post_stream(url, headers=self.chat_headers, json=self.chat_request, timeout=10, stream=True)
+            r = await self.s.post_stream(
+                url,
+                headers=self.chat_headers,
+                json=self.chat_request,
+                timeout=chat_request_timeout,
+                stream=True,
+            )
             if r.status_code != 200:
                 rtext = await r.atext()
                 if "application/json" == r.headers.get("Content-Type", ""):

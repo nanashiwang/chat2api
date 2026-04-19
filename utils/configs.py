@@ -53,6 +53,8 @@ check_model = is_true(os.getenv('CHECK_MODEL', False))
 scheduled_refresh = is_true(os.getenv('SCHEDULED_REFRESH', False))
 random_token = is_true(os.getenv('RANDOM_TOKEN', True))
 oai_language = os.getenv('OAI_LANGUAGE', 'zh-CN')
+chat_requirements_timeout = int(os.getenv('CHAT_REQUIREMENTS_TIMEOUT', 15))
+chat_request_timeout = int(os.getenv('CHAT_REQUEST_TIMEOUT', 30))
 
 authorization_list = authorization.split(',') if authorization else []
 chatgpt_base_url_list = chatgpt_base_url.split(',') if chatgpt_base_url else []
@@ -106,6 +108,8 @@ logger.info("CHECK_MODEL:       " + str(check_model))
 logger.info("SCHEDULED_REFRESH: " + str(scheduled_refresh))
 logger.info("RANDOM_TOKEN:      " + str(random_token))
 logger.info("OAI_LANGUAGE:      " + str(oai_language))
+logger.info("CHAT_REQUIREMENTS_TIMEOUT: " + str(chat_requirements_timeout))
+logger.info("CHAT_REQUEST_TIMEOUT:      " + str(chat_request_timeout))
 logger.info("------------------------- Gateway --------------------------")
 logger.info("ENABLE_GATEWAY:    " + str(enable_gateway))
 logger.info("AUTO_SEED:         " + str(auto_seed))
