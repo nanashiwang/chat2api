@@ -14,6 +14,7 @@
             const logoutApi = `${basePath}/admin/logout`;
             const bindApi = `${basePath}/admin/routing/account-bind`;
             const importAccountsApi = `${basePath}/admin/routing/accounts/import`;
+            const testProxyApi = `${basePath}/admin/routing/test-proxy`;
 
             const summaryGrid = document.getElementById('summaryGrid');
             const ipGrid = document.getElementById('ipGrid');
@@ -31,6 +32,8 @@
             const importSubmitButton = document.getElementById('importSubmitButton');
             const importTextarea = document.getElementById('importAccountsTextarea');
             const statusText = document.getElementById('statusText');
+            const testProxyButton = document.getElementById('testProxyButton');
+            const proxyTestResult = document.getElementById('proxyTestResult');
             const apiTestCommand = document.getElementById('apiTestCommand');
             const modelsTestCommand = document.getElementById('modelsTestCommand');
             const copyModelsButton = document.getElementById('copyModelsButton');
@@ -134,6 +137,11 @@
                 const model = (payload && payload.accounts && payload.accounts.length) ? 'gpt-5' : 'gpt-5';
                 modelsTestCommand.textContent = `curl --location '${origin}${basePath}/v1/models' \\\n  --header 'Authorization: Bearer ${authPlaceholder}'`;
                 apiTestCommand.textContent = `curl --location '${origin}${basePath}/v1/chat/completions' \\\n  --header 'Content-Type: application/json' \\\n  --header 'Authorization: Bearer ${authPlaceholder}' \\\n  --data '{\n  "model": "${model}",\n  "messages": [\n    {"role": "user", "content": "你好，请回复 test ok"}\n  ],\n  "stream": false\n}'`;
+            }
+
+            function getFirstConfiguredProxy() {
+                const proxies = parseProxyLines(proxyInput.value);
+                return proxies.length ? proxies[0].proxy_url : '';
             }
 
             async function copyText(content) {
@@ -259,6 +267,31 @@
                 await copyText(apiTestCommand.textContent);
             });
 
+            testProxyButton.addEventListener('click', async () => {
+                const proxyUrl = getFirstConfiguredProxy();
+                if (!proxyUrl) {
+                    proxyTestResult.textContent = '请先在代理配置中至少填写一条代理';
+                    return;
+                }
+                proxyTestResult.textContent = '测试中...';
+                const response = await fetch(testProxyApi, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ proxy_url: proxyUrl }),
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    proxyTestResult.textContent = result.detail || '代理测试失败';
+                    return;
+                }
+                proxyTestResult.textContent = (result.results || []).map((item) => {
+                    if (item.ok) {
+                        return `${item.target} -> OK (${item.status_code})`;
+                    }
+                    return `${item.target} -> FAIL (${item.error || item.status_code || 'unknown'})`;
+                }).join(' | ');
+            });
+
             navLinks.forEach((link) => {
                 link.addEventListener('click', () => {
                     const targetId = link.dataset.navTarget;
@@ -370,8 +403,10 @@
                             <h2 class="text-xl font-semibold">代理配置 IP Pool</h2>
                             <p class="text-sm text-slate-500 mt-1">一行一个代理，格式支持 <code>名称 | socks5://host:port</code></p>
                         </div>
+                        <button id="testProxyButton" class="px-4 py-2 rounded-2xl bg-white border border-slate-200 text-sm">测试首条代理</button>
                     </div>
                     <textarea id="proxyInput" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="IP-A | socks5://10.0.0.1:7890&#10;IP-B | socks5://10.0.0.2:7890"></textarea>
+                    <div id="proxyTestResult" class="mt-3 text-sm text-slate-500"></div>
                     <div class="grid md:grid-cols-3 gap-3 mt-4">
                         <div class="md:col-span-1">
                             <label class="block text-sm text-slate-500 mb-2">每组账号数</label>

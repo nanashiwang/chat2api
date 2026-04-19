@@ -5,6 +5,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app import app, templates
+from utils.Client import Client
 from utils.configs import admin_password, api_prefix, authorization_list
 from utils.routing import (
     build_group_assignments,
@@ -247,6 +248,51 @@ async def routing_admin_import_accounts(request: Request):
     )
 
 
+async def routing_admin_test_proxy(request: Request):
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    proxy_url = (body.get("proxy_url") or "").strip()
+    if not proxy_url:
+        raise HTTPException(status_code=400, detail="proxy_url is required")
+
+    client = Client(proxy=proxy_url, timeout=15)
+    results = []
+    try:
+        targets = [
+            "https://chatgpt.com",
+            "https://auth0.openai.com",
+        ]
+        for target in targets:
+            try:
+                response = await client.get(target, timeout=10)
+                results.append({
+                    "target": target,
+                    "ok": 200 <= response.status_code < 500,
+                    "status_code": response.status_code,
+                })
+            except Exception as exc:
+                results.append({
+                    "target": target,
+                    "ok": False,
+                    "error": str(exc),
+                })
+
+        overall_ok = all(item.get("ok") for item in results)
+        return JSONResponse(
+            {
+                "status": "success" if overall_ok else "partial",
+                "proxy_url": proxy_url,
+                "results": results,
+            }
+        )
+    finally:
+        await client.close()
+
+
 app.add_api_route("/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
 app.add_api_route("/admin/routing/data", routing_admin_data, methods=["GET"])
 app.add_api_route("/admin/routing/save", routing_admin_save, methods=["POST"])
@@ -255,6 +301,7 @@ app.add_api_route("/admin/login", routing_admin_login_submit, methods=["POST"])
 app.add_api_route("/admin/logout", routing_admin_logout, methods=["POST"])
 app.add_api_route("/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
+app.add_api_route("/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])
 
 if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
@@ -265,3 +312,4 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/logout", routing_admin_logout, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])
