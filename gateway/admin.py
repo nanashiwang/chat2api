@@ -204,6 +204,49 @@ async def routing_admin_bind_account(request: Request):
     return JSONResponse({"status": "success", "binding": binding})
 
 
+async def routing_admin_import_accounts(request: Request):
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    incoming_tokens = []
+    for line in text.splitlines():
+        token = line.strip()
+        if token and not token.startswith("#"):
+            incoming_tokens.append(token)
+
+    if not incoming_tokens:
+        raise HTTPException(status_code=400, detail="No valid tokens found")
+
+    existing = set(globals.token_list)
+    added = []
+    for token in incoming_tokens:
+        if token not in existing:
+            globals.token_list.append(token)
+            existing.add(token)
+            added.append(token)
+
+    if added:
+        with open(globals.TOKENS_FILE, "a", encoding="utf-8") as f:
+            for token in added:
+                f.write(token + "\n")
+
+    return JSONResponse(
+        {
+            "status": "success",
+            "added_count": len(added),
+            "skipped_count": len(incoming_tokens) - len(added),
+            "message": "账号已导入；如需固定分组，请重新发布绑定规则。",
+        }
+    )
+
+
 app.add_api_route("/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
 app.add_api_route("/admin/routing/data", routing_admin_data, methods=["GET"])
 app.add_api_route("/admin/routing/save", routing_admin_save, methods=["POST"])
@@ -211,6 +254,7 @@ app.add_api_route("/admin/login", routing_admin_login_page, methods=["GET"], res
 app.add_api_route("/admin/login", routing_admin_login_submit, methods=["POST"])
 app.add_api_route("/admin/logout", routing_admin_logout, methods=["POST"])
 app.add_api_route("/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
+app.add_api_route("/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
 
 if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
@@ -220,3 +264,4 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/login", routing_admin_login_submit, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/logout", routing_admin_logout, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])

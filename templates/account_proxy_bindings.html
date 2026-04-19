@@ -13,6 +13,7 @@
             const saveApi = `${basePath}/admin/routing/save`;
             const logoutApi = `${basePath}/admin/logout`;
             const bindApi = `${basePath}/admin/routing/account-bind`;
+            const importAccountsApi = `${basePath}/admin/routing/accounts/import`;
 
             const summaryGrid = document.getElementById('summaryGrid');
             const ipGrid = document.getElementById('ipGrid');
@@ -24,6 +25,11 @@
             const groupSizeInput = document.getElementById('groupSizeInput');
             const saveButton = document.getElementById('saveButton');
             const logoutButton = document.getElementById('logoutButton');
+            const importAccountsButton = document.getElementById('importAccountsButton');
+            const importModal = document.getElementById('importAccountsModal');
+            const importModalClose = document.getElementById('importModalClose');
+            const importSubmitButton = document.getElementById('importSubmitButton');
+            const importTextarea = document.getElementById('importAccountsTextarea');
             const statusText = document.getElementById('statusText');
             let proxyOptions = [];
             const navLinks = Array.from(document.querySelectorAll('[data-nav-target]'));
@@ -192,6 +198,37 @@
                 form.submit();
             });
 
+            importAccountsButton.addEventListener('click', () => {
+                importModal.classList.remove('hidden');
+                importModal.classList.add('flex');
+            });
+
+            importModalClose.addEventListener('click', () => {
+                importModal.classList.add('hidden');
+                importModal.classList.remove('flex');
+            });
+
+            importSubmitButton.addEventListener('click', async () => {
+                const text = importTextarea.value.trim();
+                if (!text) {
+                    alert('请输入账号 token，一行一个');
+                    return;
+                }
+                const response = await fetch(importAccountsApi, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text }),
+                });
+                const result = await response.json();
+                statusText.textContent = response.ok ? result.message : (result.detail || '导入失败');
+                if (response.ok) {
+                    importTextarea.value = '';
+                    importModal.classList.add('hidden');
+                    importModal.classList.remove('flex');
+                    await loadDashboard();
+                }
+            });
+
             navLinks.forEach((link) => {
                 link.addEventListener('click', () => {
                     const targetId = link.dataset.navTarget;
@@ -248,6 +285,7 @@
                     </div>
                     <div class="flex items-center gap-3">
                         <div class="text-sm text-slate-500">最后发布：<span id="updatedAt">尚未发布</span></div>
+                        <button id="importAccountsButton" class="px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm">新增账号</button>
                         <button id="logoutButton" class="px-4 py-2 rounded-2xl bg-white border border-slate-200 text-sm">退出登录</button>
                     </div>
                 </div>
@@ -340,6 +378,22 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <div id="importAccountsModal" class="fixed inset-0 bg-slate-900/50 hidden items-center justify-center p-6">
+        <div class="w-full max-w-2xl bg-white rounded-3xl shadow-xl p-6">
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <h3 class="text-xl font-semibold">新增账号</h3>
+                    <p class="text-sm text-slate-500 mt-1">一行一个 token，支持批量导入；导入后如需固定分组，请重新发布绑定规则。</p>
+                </div>
+                <button id="importModalClose" class="px-3 py-2 rounded-xl bg-slate-100 text-sm">关闭</button>
+            </div>
+            <textarea id="importAccountsTextarea" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="rt-xxx1&#10;rt-xxx2&#10;rt-xxx3"></textarea>
+            <div class="flex justify-end gap-3 mt-4">
+                <button id="importSubmitButton" class="px-5 py-3 rounded-2xl bg-slate-900 text-white">导入账号</button>
+            </div>
+        </div>
     </div>
 </body>
 </html>

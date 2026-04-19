@@ -11,6 +11,7 @@ import utils.globals as globals
 from app import app, templates, security_scheme
 from chatgpt.ChatService import ChatService
 from chatgpt.authorization import refresh_all_tokens
+from utils.bootstrap import initialize_from_env
 from utils.Logger import logger
 from utils.configs import api_prefix, scheduled_refresh, history_disabled
 from utils.retry import async_retry
@@ -20,6 +21,7 @@ scheduler = AsyncIOScheduler()
 
 @app.on_event("startup")
 async def app_start():
+    initialize_from_env()
     if scheduled_refresh:
         scheduler.add_job(id='refresh', func=refresh_all_tokens, trigger='cron', hour=3, minute=0, day='*/2',
                           kwargs={'force_refresh': True})
