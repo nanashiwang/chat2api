@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from utils.Client import Client
 from utils.Logger import logger
 from utils.configs import proxy_url_list
+from utils.routing import get_bound_proxy
 import utils.globals as globals
 
 
@@ -36,7 +37,10 @@ async def chat_refresh(refresh_token):
         "refresh_token": refresh_token
     }
     session_id = hashlib.md5(refresh_token.encode()).hexdigest()
-    proxy_url = random.choice(proxy_url_list).replace("{}", session_id) if proxy_url_list else None
+    bound_proxy = get_bound_proxy(refresh_token)
+    proxy_url = bound_proxy or (random.choice(proxy_url_list).replace("{}", session_id) if proxy_url_list else None)
+    if proxy_url:
+        proxy_url = proxy_url.replace("{}", session_id)
     client = Client(proxy=proxy_url)
     try:
         r = await client.post("https://auth0.openai.com/oauth/token", json=data, timeout=15)

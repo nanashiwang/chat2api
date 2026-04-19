@@ -8,16 +8,23 @@ from ua_generator.options import Options
 
 import utils.globals as globals
 from utils import configs
+from utils.routing import get_bound_proxy
 
 
 def get_fp(req_token):
     fp = globals.fp_map.get(req_token, {})
+    bound_proxy = get_bound_proxy(req_token)
     if fp and fp.get("user-agent") and fp.get("impersonate"):
-        if "proxy_url" in fp.keys() and (fp["proxy_url"] is None or fp["proxy_url"] not in configs.proxy_url_list):
+        if bound_proxy:
+            fp["proxy_url"] = bound_proxy
+            globals.fp_map[req_token] = fp
+            with open(globals.FP_FILE, "w", encoding="utf-8") as f:
+                json.dump(globals.fp_map, f, indent=4, ensure_ascii=False)
+        elif "proxy_url" in fp.keys() and (fp["proxy_url"] is None or fp["proxy_url"] not in configs.proxy_url_list):
             fp["proxy_url"] = random.choice(configs.proxy_url_list) if configs.proxy_url_list else None
             globals.fp_map[req_token] = fp
             with open(globals.FP_FILE, "w", encoding="utf-8") as f:
-                json.dump(globals.fp_map, f, indent=4)
+                json.dump(globals.fp_map, f, indent=4, ensure_ascii=False)
         if globals.impersonate_list and "impersonate" in fp.keys() and fp["impersonate"] not in globals.impersonate_list:
             fp["impersonate"] = random.choice(globals.impersonate_list)
             globals.fp_map[req_token] = fp
@@ -44,7 +51,7 @@ def get_fp(req_token):
         fp = {
             "user-agent": ua.text if not configs.user_agents_list else random.choice(configs.user_agents_list),
             "impersonate": random.choice(globals.impersonate_list),
-            "proxy_url": random.choice(configs.proxy_url_list) if configs.proxy_url_list else None,
+            "proxy_url": bound_proxy or (random.choice(configs.proxy_url_list) if configs.proxy_url_list else None),
             "oai-device-id": str(uuid.uuid4())
         }
         if ua.device == "desktop" and ua.browser in ("chrome", "edge"):
@@ -57,5 +64,5 @@ def get_fp(req_token):
         else:
             globals.fp_map[req_token] = fp
             with open(globals.FP_FILE, "w", encoding="utf-8") as f:
-                json.dump(globals.fp_map, f, indent=4)
+                json.dump(globals.fp_map, f, indent=4, ensure_ascii=False)
             return fp

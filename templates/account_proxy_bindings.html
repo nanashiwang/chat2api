@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta content="width=device-width, initial-scale=1.0" name="viewport">
+    <title>Chat2API Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const apiPrefix = "{{ api_prefix }}";
+            const basePath = apiPrefix === "None" ? "" : `/${apiPrefix}`;
+            const dataApi = `${basePath}/admin/routing/data`;
+            const saveApi = `${basePath}/admin/routing/save`;
+            const logoutApi = `${basePath}/admin/logout`;
+            const bindApi = `${basePath}/admin/routing/account-bind`;
+
+            const summaryGrid = document.getElementById('summaryGrid');
+            const ipGrid = document.getElementById('ipGrid');
+            const accountsTable = document.getElementById('accountsTable');
+            const rulesTable = document.getElementById('rulesTable');
+            const alertsList = document.getElementById('alertsList');
+            const updatedAt = document.getElementById('updatedAt');
+            const proxyInput = document.getElementById('proxyInput');
+            const groupSizeInput = document.getElementById('groupSizeInput');
+            const saveButton = document.getElementById('saveButton');
+            const logoutButton = document.getElementById('logoutButton');
+            const statusText = document.getElementById('statusText');
+            let proxyOptions = [];
+
+            function parseProxyLines(raw) {
+                return raw
+                    .split('\n')
+                    .map(line => line.trim())
+                    .filter(Boolean)
+                    .map((line, index) => {
+                        const parts = line.split('|');
+                        if (parts.length >= 2) {
+                            return { name: parts[0].trim(), proxy_url: parts.slice(1).join('|').trim() };
+                        }
+                        return { name: `IP-${index + 1}`, proxy_url: line };
+                    })
+                    .filter(item => item.proxy_url);
+            }
+
+            function renderSummary(summary) {
+                const cards = [
+                    ['账号总数', summary.accounts_total],
+                    ['可用账号', summary.accounts_ok],
+                    ['异常账号', summary.accounts_bad],
+                    ['IP 总数', summary.proxy_total],
+                    ['分组总数', summary.group_total],
+                    ['已绑定账号', summary.bound_total],
+                ];
+                summaryGrid.innerHTML = cards.map(([label, value]) => `
+                    <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-4">
+                        <div class="text-sm text-slate-500">${label}</div>
+                        <div class="text-2xl font-bold mt-2">${value}</div>
+                    </div>
+                `).join('');
+            }
+
+            function renderIpCards(cards) {
+                ipGrid.innerHTML = cards.map((ip) => `
+                    <div class="border border-slate-200 rounded-3xl p-4 bg-white">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="font-semibold text-lg">${ip.name}</div>
+                            <span class="text-xs px-2 py-1 rounded-full ${ip.bad ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}">${ip.bad ? '需关注' : '在线'}</span>
+                        </div>
+                        <div class="text-sm text-slate-500 break-all">${ip.proxy_url}</div>
+                        <div class="grid grid-cols-2 gap-3 mt-4 text-sm">
+                            <div class="bg-slate-50 rounded-2xl p-3">绑定账号<br><span class="text-xl font-bold">${ip.accounts}</span></div>
+                            <div class="bg-slate-50 rounded-2xl p-3">所属分组<br><span class="text-xl font-bold">${ip.group}</span></div>
+                            <div class="bg-slate-50 rounded-2xl p-3">正常账号<br><span class="text-xl font-bold">${ip.ok}</span></div>
+                            <div class="bg-slate-50 rounded-2xl p-3">异常账号<br><span class="text-xl font-bold">${ip.bad}</span></div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            function renderAccounts(accounts) {
+                accountsTable.innerHTML = accounts.map((row) => `
+                    <tr class="border-b border-slate-100">
+                        <td class="py-4 font-medium">${row.id}</td>
+                        <td class="py-4 font-mono text-xs">${row.token_masked}</td>
+                        <td class="py-4">${row.status}</td>
+                        <td class="py-4">
+                            <select class="account-proxy-select px-3 py-2 rounded-xl border border-slate-200 text-sm" data-token="${row.token}">
+                                ${proxyOptions.map((proxy) => `
+                                    <option value="${proxy.proxy_url}" ${proxy.name === row.proxy_name ? 'selected' : ''}>${proxy.name}</option>
+                                `).join('')}
+                            </select>
+                        </td>
+                        <td class="py-4">${row.group}</td>
+                        <td class="py-4 text-slate-500">${row.updated_at || '-'}</td>
+                        <td class="py-4">
+                            <button class="bind-account-button px-3 py-2 rounded-xl bg-slate-900 text-white text-xs" data-token="${row.token}">保存</button>
+                        </td>
+                    </tr>
+                `).join('');
+            }
+
+            function renderRules(rules) {
+                rulesTable.innerHTML = rules.map((rule) => `
+                    <tr class="border-b border-slate-100">
+                        <td class="py-4 font-medium">${rule.name}</td>
+                        <td class="py-4">${rule.proxy_name}</td>
+                        <td class="py-4">${rule.size}</td>
+                        <td class="py-4">固定绑定</td>
+                        <td class="py-4">${rule.status === 'enabled' ? '启用' : '停用'}</td>
+                    </tr>
+                `).join('');
+            }
+
+            function renderAlerts(alerts) {
+                alertsList.innerHTML = alerts.map((item) => `
+                    <div class="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm">${item}</div>
+                `).join('');
+            }
+
+            function fillProxyInput(config) {
+                const proxies = config.proxies || [];
+                if (!proxies.length) return;
+                proxyInput.value = proxies.map(proxy => `${proxy.name} | ${proxy.proxy_url}`).join('\n');
+            }
+
+            async function loadDashboard() {
+                const response = await fetch(dataApi);
+                const payload = await response.json();
+                proxyOptions = payload.proxy_options || [];
+                renderSummary(payload.summary);
+                renderIpCards(payload.ip_cards || []);
+                renderAccounts(payload.accounts || []);
+                renderRules(payload.rules || []);
+                renderAlerts(payload.alerts || []);
+                fillProxyInput(payload.routing_config || {});
+                updatedAt.textContent = payload.updated_at || '尚未发布';
+            }
+
+            saveButton.addEventListener('click', async () => {
+                const proxies = parseProxyLines(proxyInput.value);
+                if (!proxies.length) {
+                    alert('请至少配置一个代理');
+                    return;
+                }
+                statusText.textContent = '保存中...';
+                const response = await fetch(saveApi, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        proxies,
+                        group_size: parseInt(groupSizeInput.value || '25', 10),
+                    }),
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    statusText.textContent = result.detail || '保存失败';
+                    return;
+                }
+                statusText.textContent = result.message;
+                await loadDashboard();
+            });
+
+            accountsTable.addEventListener('click', async (event) => {
+                const button = event.target.closest('.bind-account-button');
+                if (!button) return;
+                const token = button.dataset.token;
+                const select = accountsTable.querySelector(`.account-proxy-select[data-token="${token}"]`);
+                const proxyUrl = select.value;
+                const proxy = proxyOptions.find((item) => item.proxy_url === proxyUrl);
+                const response = await fetch(bindApi, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token,
+                        proxy_url: proxyUrl,
+                        proxy_name: proxy ? proxy.name : 'Custom Proxy',
+                    }),
+                });
+                const result = await response.json();
+                statusText.textContent = response.ok ? '账号绑定已更新' : (result.detail || '更新失败');
+                if (response.ok) {
+                    await loadDashboard();
+                }
+            });
+
+            logoutButton.addEventListener('click', async () => {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = logoutApi;
+                document.body.appendChild(form);
+                form.submit();
+            });
+
+            loadDashboard().catch((error) => {
+                statusText.textContent = `加载失败: ${error.message}`;
+            });
+        });
+    </script>
+</head>
+<body class="min-h-screen bg-slate-100 text-slate-900">
+    <div class="flex min-h-screen">
+        <aside class="w-72 min-h-screen bg-slate-900 text-white p-6">
+            <div class="text-2xl font-bold mb-8">Chat2API Admin</div>
+            <nav class="space-y-2 text-sm">
+                <div class="px-4 py-3 rounded-2xl bg-slate-800">总览 Dashboard</div>
+                <div class="px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700">账号管理 Accounts</div>
+                <div class="px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700">IP 管理 IP Pool</div>
+                <div class="px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700">绑定规则 Routing</div>
+            </nav>
+        </aside>
+
+        <main class="flex-1 p-8 space-y-8">
+            <section>
+                <div class="flex items-center justify-between mb-4">
+                <div>
+                        <h1 class="text-3xl font-bold">总览 Dashboard</h1>
+                        <p class="text-slate-600 mt-1">固定代理分组后台，支持按组把账号批量绑定到指定出口。</p>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <div class="text-sm text-slate-500">最后发布：<span id="updatedAt">尚未发布</span></div>
+                        <button id="logoutButton" class="px-4 py-2 rounded-2xl bg-white border border-slate-200 text-sm">退出登录</button>
+                    </div>
+                </div>
+                <div id="summaryGrid" class="grid grid-cols-2 lg:grid-cols-6 gap-4"></div>
+            </section>
+
+            <section class="grid lg:grid-cols-3 gap-6">
+                <div class="lg:col-span-2 bg-white rounded-3xl shadow-sm p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-xl font-semibold">IP 负载概览</h2>
+                        <div class="text-sm text-slate-500">固定映射后会同步到 <code>fp_map.json</code></div>
+                    </div>
+                    <div id="ipGrid" class="grid md:grid-cols-2 gap-4"></div>
+                </div>
+                <div class="bg-white rounded-3xl shadow-sm p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-xl font-semibold">告警中心</h2>
+                    </div>
+                    <div id="alertsList" class="space-y-3"></div>
+                </div>
+            </section>
+
+            <section class="grid lg:grid-cols-2 gap-6">
+                <div class="bg-white rounded-3xl shadow-sm p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <h2 class="text-xl font-semibold">代理配置 IP Pool</h2>
+                            <p class="text-sm text-slate-500 mt-1">一行一个代理，格式支持 <code>名称 | socks5://host:port</code></p>
+                        </div>
+                    </div>
+                    <textarea id="proxyInput" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="IP-A | socks5://10.0.0.1:7890&#10;IP-B | socks5://10.0.0.2:7890"></textarea>
+                    <div class="grid md:grid-cols-3 gap-3 mt-4">
+                        <div class="md:col-span-1">
+                            <label class="block text-sm text-slate-500 mb-2">每组账号数</label>
+                            <input id="groupSizeInput" type="number" min="1" value="25" class="w-full px-4 py-3 rounded-2xl border border-slate-200">
+                        </div>
+                        <div class="md:col-span-2 flex items-end gap-3">
+                            <button id="saveButton" class="px-5 py-3 rounded-2xl bg-slate-900 text-white">一键均分并发布</button>
+                            <div id="statusText" class="text-sm text-slate-500"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-3xl shadow-sm p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <h2 class="text-xl font-semibold">绑定规则 Routing</h2>
+                            <p class="text-sm text-slate-500 mt-1">按照账号列表顺序分组，每组固定绑定一个代理。</p>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="text-left border-b border-slate-200">
+                                    <th class="py-3">分组</th>
+                                    <th class="py-3">绑定 IP</th>
+                                    <th class="py-3">账号数</th>
+                                    <th class="py-3">策略</th>
+                                    <th class="py-3">状态</th>
+                                </tr>
+                            </thead>
+                            <tbody id="rulesTable"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section class="bg-white rounded-3xl shadow-sm p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold">账号管理 Accounts</h2>
+                        <p class="text-sm text-slate-500 mt-1">查看账号当前绑定的代理与分组，异常账号会从错误列表中标出。</p>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-left border-b border-slate-200">
+                                <th class="py-3">账号</th>
+                                <th class="py-3">Token</th>
+                                <th class="py-3">状态</th>
+                                <th class="py-3">绑定 IP</th>
+                                <th class="py-3">分组</th>
+                                <th class="py-3">最近更新</th>
+                                <th class="py-3">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accountsTable"></tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+</body>
+</html>

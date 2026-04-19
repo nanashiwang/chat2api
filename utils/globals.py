@@ -10,6 +10,7 @@ REFRESH_MAP_FILE = os.path.join(DATA_FOLDER, "refresh_map.json")
 ERROR_TOKENS_FILE = os.path.join(DATA_FOLDER, "error_token.txt")
 WSS_MAP_FILE = os.path.join(DATA_FOLDER, "wss_map.json")
 FP_FILE = os.path.join(DATA_FOLDER, "fp_map.json")
+ROUTING_CONFIG_FILE = os.path.join(DATA_FOLDER, "routing_config.json")
 SEED_MAP_FILE = os.path.join(DATA_FOLDER, "seed_map.json")
 CONVERSATION_MAP_FILE = os.path.join(DATA_FOLDER, "conversation_map.json")
 
@@ -19,6 +20,7 @@ error_token_list = []
 refresh_map = {}
 wss_map = {}
 fp_map = {}
+routing_config = {}
 seed_map = {}
 conversation_map = {}
 impersonate_list = [
@@ -65,6 +67,15 @@ if os.path.exists(FP_FILE):
             fp_map = {}
 else:
     fp_map = {}
+
+if os.path.exists(ROUTING_CONFIG_FILE):
+    with open(ROUTING_CONFIG_FILE, "r", encoding="utf-8") as f:
+        try:
+            routing_config = json.load(f)
+        except:
+            routing_config = {}
+else:
+    routing_config = {}
 
 if os.path.exists(SEED_MAP_FILE):
     with open(SEED_MAP_FILE, "r") as f:
