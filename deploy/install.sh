@@ -127,6 +127,17 @@ EOF
 
 ensure_docker
 
+sudo mkdir -p /etc
+sudo tee /etc/chat2api.env >/dev/null <<EOF
+INSTALL_DIR='$(yaml_escape "$INSTALL_DIR")'
+PORT='$(yaml_escape "$PORT")'
+API_PREFIX='$(yaml_escape "$API_PREFIX")'
+IMAGE='$(yaml_escape "$IMAGE")'
+EOF
+
+SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+sudo install -m 0755 "$SCRIPT_SOURCE_DIR/chat2api.sh" /usr/local/bin/chat2api
+
 sudo docker compose pull
 sudo docker compose up -d
 
@@ -134,3 +145,4 @@ echo
 echo "Deployment complete."
 echo "Admin login: http://<server-ip>:$PORT/$API_PREFIX/admin/login"
 echo "API endpoint: http://<server-ip>:$PORT/$API_PREFIX/v1/chat/completions"
+echo "Manage commands: chat2api status | chat2api logs | chat2api update"

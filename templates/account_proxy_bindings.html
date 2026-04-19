@@ -31,6 +31,10 @@
             const importSubmitButton = document.getElementById('importSubmitButton');
             const importTextarea = document.getElementById('importAccountsTextarea');
             const statusText = document.getElementById('statusText');
+            const apiTestCommand = document.getElementById('apiTestCommand');
+            const modelsTestCommand = document.getElementById('modelsTestCommand');
+            const copyModelsButton = document.getElementById('copyModelsButton');
+            const copyChatButton = document.getElementById('copyChatButton');
             let proxyOptions = [];
             const navLinks = Array.from(document.querySelectorAll('[data-nav-target]'));
 
@@ -124,6 +128,23 @@
                 `).join('');
             }
 
+            function buildTestCommands(payload) {
+                const origin = window.location.origin;
+                const authPlaceholder = '请替换为你的 AUTHORIZATION';
+                const model = (payload && payload.accounts && payload.accounts.length) ? 'gpt-5' : 'gpt-5';
+                modelsTestCommand.textContent = `curl --location '${origin}${basePath}/v1/models' \\\n  --header 'Authorization: Bearer ${authPlaceholder}'`;
+                apiTestCommand.textContent = `curl --location '${origin}${basePath}/v1/chat/completions' \\\n  --header 'Content-Type: application/json' \\\n  --header 'Authorization: Bearer ${authPlaceholder}' \\\n  --data '{\n  "model": "${model}",\n  "messages": [\n    {"role": "user", "content": "你好，请回复 test ok"}\n  ],\n  "stream": false\n}'`;
+            }
+
+            async function copyText(content) {
+                try {
+                    await navigator.clipboard.writeText(content);
+                    statusText.textContent = '测试命令已复制';
+                } catch (error) {
+                    statusText.textContent = `复制失败: ${error.message}`;
+                }
+            }
+
             function fillProxyInput(config) {
                 const proxies = config.proxies || [];
                 if (!proxies.length) return;
@@ -140,6 +161,7 @@
                 renderRules(payload.rules || []);
                 renderAlerts(payload.alerts || []);
                 fillProxyInput(payload.routing_config || {});
+                buildTestCommands(payload);
                 updatedAt.textContent = payload.updated_at || '尚未发布';
             }
 
@@ -229,6 +251,14 @@
                 }
             });
 
+            copyModelsButton.addEventListener('click', async () => {
+                await copyText(modelsTestCommand.textContent);
+            });
+
+            copyChatButton.addEventListener('click', async () => {
+                await copyText(apiTestCommand.textContent);
+            });
+
             navLinks.forEach((link) => {
                 link.addEventListener('click', () => {
                     const targetId = link.dataset.navTarget;
@@ -305,6 +335,31 @@
                         <h2 class="text-xl font-semibold">告警中心</h2>
                     </div>
                     <div id="alertsList" class="space-y-3"></div>
+                </div>
+            </section>
+
+            <section class="bg-white rounded-3xl shadow-sm p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold">测试样例</h2>
+                        <p class="text-sm text-slate-500 mt-1">一键复制模型探测和聊天测试命令；只需把授权码替换成你配置的 `AUTHORIZATION`。</p>
+                    </div>
+                </div>
+                <div class="grid lg:grid-cols-2 gap-6">
+                    <div class="rounded-2xl border border-slate-200 p-4 bg-slate-50">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="font-medium">模型列表测试</div>
+                            <button id="copyModelsButton" class="px-3 py-2 rounded-xl bg-white border border-slate-200 text-sm">复制</button>
+                        </div>
+                        <pre id="modelsTestCommand" class="text-xs leading-6 whitespace-pre-wrap break-all text-slate-700"></pre>
+                    </div>
+                    <div class="rounded-2xl border border-slate-200 p-4 bg-slate-50">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="font-medium">聊天接口测试</div>
+                            <button id="copyChatButton" class="px-3 py-2 rounded-xl bg-white border border-slate-200 text-sm">复制</button>
+                        </div>
+                        <pre id="apiTestCommand" class="text-xs leading-6 whitespace-pre-wrap break-all text-slate-700"></pre>
+                    </div>
                 </div>
             </section>
 
