@@ -17,6 +17,7 @@
             const importAccountsApi = `${basePath}/admin/routing/accounts/import`;
             const deleteAccountApi = `${basePath}/admin/routing/accounts/delete`;
             const refreshAccountApi = `${basePath}/admin/routing/accounts/refresh`;
+            const refreshAllAccountsApi = `${basePath}/admin/routing/accounts/refresh-all`;
             const testProxyApi = `${basePath}/admin/routing/test-proxy`;
 
             const summaryGrid = document.getElementById('summaryGrid');
@@ -33,7 +34,13 @@
             const importModal = document.getElementById('importAccountsModal');
             const importModalClose = document.getElementById('importModalClose');
             const importSubmitButton = document.getElementById('importSubmitButton');
+            const importModalTitle = document.getElementById('importModalTitle');
+            const importModalDesc = document.getElementById('importModalDesc');
             const importTextarea = document.getElementById('importAccountsTextarea');
+            const accountNoteInput = document.getElementById('accountNoteInput');
+            const accountGroupInput = document.getElementById('accountGroupInput');
+            const accountProxySelect = document.getElementById('accountProxySelect');
+            const refreshAllButton = document.getElementById('refreshAllButton');
             const statusText = document.getElementById('statusText');
             const testProxyButton = document.getElementById('testProxyButton');
             const proxyTestResult = document.getElementById('proxyTestResult');
@@ -42,6 +49,8 @@
             const copyModelsButton = document.getElementById('copyModelsButton');
             const copyChatButton = document.getElementById('copyChatButton');
             let proxyOptions = [];
+            let accountsCache = [];
+            let editingToken = '';
             const navLinks = Array.from(document.querySelectorAll('[data-nav-target]'));
 
             function parseProxyLines(raw) {
@@ -95,18 +104,21 @@
             }
 
             function renderAccounts(accounts) {
+                accountsCache = accounts;
                 accountsTable.innerHTML = accounts.map((row) => `
                     <tr class="border-b border-slate-100">
                         <td class="py-4 font-medium">${row.id}</td>
                         <td class="py-4 font-mono text-xs break-all select-all">${row.token}</td>
+                        <td class="py-4 text-slate-600">${row.note || '-'}</td>
                         <td class="py-4">
                             <span class="px-2 py-1 rounded-full text-xs ${row.token_type === 'RefreshToken' ? 'bg-blue-100 text-blue-700' : row.token_type === 'AccessToken' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700'}">${row.token_type}</span>
                         </td>
                         <td class="py-4">${row.status}</td>
                         <td class="py-4">
                             <select class="account-proxy-select px-3 py-2 rounded-xl border border-slate-200 text-sm" data-token="${row.token}">
+                                <option value="" ${!row.proxy_url ? 'selected' : ''}>未绑定</option>
                                 ${proxyOptions.map((proxy) => `
-                                    <option value="${proxy.proxy_url}" ${proxy.name === row.proxy_name ? 'selected' : ''}>${proxy.name}</option>
+                                    <option value="${proxy.proxy_url}" ${proxy.proxy_url === row.proxy_url ? 'selected' : ''}>${proxy.name}</option>
                                 `).join('')}
                             </select>
                         </td>
@@ -120,6 +132,7 @@
                         <td class="py-4">
                             <div class="flex gap-2">
                                 <button class="bind-account-button px-3 py-2 rounded-xl bg-slate-900 text-white text-xs" data-token="${row.token}">保存</button>
+                                <button class="edit-account-button px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs" data-token="${row.token}">编辑</button>
                                 ${row.can_refresh ? `<button class="refresh-account-button px-3 py-2 rounded-xl bg-blue-50 text-blue-700 border border-blue-200 text-xs" data-token="${row.token}">立即刷新</button>` : ''}
                                 <button class="delete-account-button px-3 py-2 rounded-xl bg-red-50 text-red-700 border border-red-200 text-xs" data-token="${row.token}">删除</button>
                             </div>
@@ -192,6 +205,38 @@
                 proxyInput.value = proxies.map(proxy => `${proxy.name} | ${proxy.proxy_url}`).join('\n');
             }
 
+            function fillAccountProxySelect() {
+                accountProxySelect.innerHTML = `<option value="">不绑定固定代理</option>` + proxyOptions.map((proxy) => `
+                    <option value="${proxy.proxy_url}">${proxy.name} | ${proxy.proxy_url}</option>
+                `).join('');
+            }
+
+            function openAccountModal(mode, account = null) {
+                editingToken = account ? account.token : '';
+                importModalTitle.textContent = mode === 'edit' ? '编辑账号' : '新增账号';
+                importModalDesc.textContent = mode === 'edit'
+                    ? '可直接修改备注、分组和固定代理；保存后立即生效。'
+                    : '支持单个新增，也支持多行批量导入；备注、分组和固定代理会应用到本次输入的账号。';
+                importTextarea.value = account ? account.token : '';
+                importTextarea.readOnly = mode === 'edit';
+                accountNoteInput.value = account ? (account.note || '') : '';
+                accountGroupInput.value = account ? (account.group && account.group !== '-' ? account.group : '') : '';
+                accountProxySelect.value = account ? (account.proxy_url || '') : '';
+                importModal.classList.remove('hidden');
+                importModal.classList.add('flex');
+            }
+
+            function closeAccountModal() {
+                editingToken = '';
+                importTextarea.value = '';
+                importTextarea.readOnly = false;
+                accountNoteInput.value = '';
+                accountGroupInput.value = '';
+                accountProxySelect.value = '';
+                importModal.classList.add('hidden');
+                importModal.classList.remove('flex');
+            }
+
             async function loadDashboard() {
                 const response = await fetch(dataApi);
                 const payload = await response.json();
@@ -202,6 +247,7 @@
                 renderRules(payload.rules || []);
                 renderAlerts(payload.alerts || []);
                 fillProxyInput(payload.routing_config || {});
+                fillAccountProxySelect();
                 buildTestCommands(payload);
                 updatedAt.textContent = payload.updated_at || '尚未发布';
             }
@@ -232,6 +278,7 @@
 
             accountsTable.addEventListener('click', async (event) => {
                 const button = event.target.closest('.bind-account-button');
+                const editButton = event.target.closest('.edit-account-button');
                 const refreshButton = event.target.closest('.refresh-account-button');
                 const deleteButton = event.target.closest('.delete-account-button');
 
@@ -239,6 +286,10 @@
                     const token = button.dataset.token;
                     const select = accountsTable.querySelector(`.account-proxy-select[data-token="${token}"]`);
                     const proxyUrl = select.value;
+                    if (!proxyUrl) {
+                        statusText.textContent = '如需解除绑定或修改备注，请点“编辑”后保存';
+                        return;
+                    }
                     const proxy = proxyOptions.find((item) => item.proxy_url === proxyUrl);
                     const response = await fetch(bindApi, {
                         method: 'POST',
@@ -254,6 +305,13 @@
                     if (response.ok) {
                         await loadDashboard();
                     }
+                    return;
+                }
+
+                if (editButton) {
+                    const token = editButton.dataset.token;
+                    const account = accountsCache.find((item) => item.token === token);
+                    openAccountModal('edit', account || null);
                     return;
                 }
 
@@ -302,13 +360,11 @@
             });
 
             importAccountsButton.addEventListener('click', () => {
-                importModal.classList.remove('hidden');
-                importModal.classList.add('flex');
+                openAccountModal('create');
             });
 
             importModalClose.addEventListener('click', () => {
-                importModal.classList.add('hidden');
-                importModal.classList.remove('flex');
+                closeAccountModal();
             });
 
             importSubmitButton.addEventListener('click', async () => {
@@ -317,17 +373,43 @@
                     alert('请输入账号 token，一行一个');
                     return;
                 }
+                if (editingToken && text !== editingToken) {
+                    alert('编辑账号时不允许修改 token 本身');
+                    return;
+                }
+                const proxyUrl = accountProxySelect.value;
+                const proxy = proxyOptions.find((item) => item.proxy_url === proxyUrl);
                 const response = await fetch(importAccountsApi, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text }),
+                    body: JSON.stringify({
+                        text,
+                        note: accountNoteInput.value.trim(),
+                        group_name: accountGroupInput.value.trim(),
+                        proxy_url: proxyUrl,
+                        proxy_name: proxy ? proxy.name : '',
+                        overwrite_existing: Boolean(editingToken),
+                    }),
                 });
                 const result = await response.json();
-                statusText.textContent = response.ok ? result.message : (result.detail || '导入失败');
+                statusText.textContent = response.ok ? result.message : (result.detail || '保存失败');
                 if (response.ok) {
-                    importTextarea.value = '';
-                    importModal.classList.add('hidden');
-                    importModal.classList.remove('flex');
+                    closeAccountModal();
+                    await loadDashboard();
+                }
+            });
+
+            refreshAllButton.addEventListener('click', async () => {
+                refreshAllButton.disabled = true;
+                statusText.textContent = '正在批量刷新所有 RefreshToken...';
+                const response = await fetch(refreshAllAccountsApi, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                });
+                const result = await response.json();
+                refreshAllButton.disabled = false;
+                statusText.textContent = response.ok ? result.message : (result.detail || '批量刷新失败');
+                if (response.ok) {
                     await loadDashboard();
                 }
             });
@@ -520,8 +602,9 @@
                 <div class="flex items-center justify-between mb-4">
                     <div>
                         <h2 class="text-xl font-semibold">账号管理 Accounts</h2>
-                        <p class="text-sm text-slate-500 mt-1">查看账号当前绑定的代理与分组，异常账号会从错误列表中标出。</p>
+                        <p class="text-sm text-slate-500 mt-1">查看账号当前绑定的代理与分组，支持直接编辑备注、固定代理，并可批量刷新全部 RefreshToken。</p>
                     </div>
+                    <button id="refreshAllButton" class="px-4 py-2 rounded-2xl bg-blue-600 text-white text-sm">批量刷新全部 RT</button>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-sm">
@@ -529,6 +612,7 @@
                                 <tr class="text-left border-b border-slate-200">
                                     <th class="py-3">账号</th>
                                     <th class="py-3">Token</th>
+                                    <th class="py-3">备注</th>
                                     <th class="py-3">类型</th>
                                     <th class="py-3">状态</th>
                                     <th class="py-3">绑定 IP</th>
@@ -549,14 +633,30 @@
         <div class="w-full max-w-2xl bg-white rounded-3xl shadow-xl p-6">
             <div class="flex items-center justify-between mb-4">
                 <div>
-                    <h3 class="text-xl font-semibold">新增账号</h3>
-                    <p class="text-sm text-slate-500 mt-1">一行一个 token，支持 AccessToken / RefreshToken 批量导入；如果是 RefreshToken，导入后可在列表里手动点“立即刷新”。</p>
+                    <h3 id="importModalTitle" class="text-xl font-semibold">新增账号</h3>
+                    <p id="importModalDesc" class="text-sm text-slate-500 mt-1">一行一个 token，支持 AccessToken / RefreshToken 批量导入；如果是 RefreshToken，导入后可在列表里手动点“立即刷新”。</p>
                 </div>
                 <button id="importModalClose" class="px-3 py-2 rounded-xl bg-slate-100 text-sm">关闭</button>
             </div>
             <textarea id="importAccountsTextarea" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="eyJhbGciOi...&#10;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></textarea>
+            <div class="grid md:grid-cols-2 gap-4 mt-4">
+                <div>
+                    <label class="block text-sm text-slate-500 mb-2">备注</label>
+                    <input id="accountNoteInput" class="w-full px-4 py-3 rounded-2xl border border-slate-200" placeholder="例如：A组-主账号">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate-500 mb-2">分组名称</label>
+                    <input id="accountGroupInput" class="w-full px-4 py-3 rounded-2xl border border-slate-200" placeholder="例如：Group A">
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block text-sm text-slate-500 mb-2">固定代理</label>
+                    <select id="accountProxySelect" class="w-full px-4 py-3 rounded-2xl border border-slate-200">
+                        <option value="">不绑定固定代理</option>
+                    </select>
+                </div>
+            </div>
             <div class="flex justify-end gap-3 mt-4">
-                <button id="importSubmitButton" class="px-5 py-3 rounded-2xl bg-slate-900 text-white">导入账号</button>
+                <button id="importSubmitButton" class="px-5 py-3 rounded-2xl bg-slate-900 text-white">保存账号</button>
             </div>
         </div>
     </div>

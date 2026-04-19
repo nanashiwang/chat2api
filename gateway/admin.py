@@ -16,6 +16,7 @@ from utils.routing import (
     remove_account_binding,
     save_routing_config,
     sync_bindings_to_fp,
+    update_account_meta,
     update_single_binding,
 )
 import utils.globals as globals
@@ -227,6 +228,11 @@ async def routing_admin_import_accounts(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     text = (body.get("text") or "").strip()
+    note = (body.get("note") or "").strip()
+    group_name = (body.get("group_name") or "").strip()
+    proxy_url = (body.get("proxy_url") or "").strip()
+    proxy_name = (body.get("proxy_name") or "").strip()
+    overwrite_existing = bool(body.get("overwrite_existing"))
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
 
@@ -241,23 +247,41 @@ async def routing_admin_import_accounts(request: Request):
 
     existing = set(globals.token_list)
     added = []
+    updated = []
     for token in incoming_tokens:
         if token not in existing:
             globals.token_list.append(token)
             existing.add(token)
             added.append(token)
+        elif overwrite_existing:
+            updated.append(token)
 
     if added:
         with open(globals.TOKENS_FILE, "a", encoding="utf-8") as f:
             for token in added:
                 f.write(token + "\n")
 
+    config = get_routing_config()
+    if proxy_url and not proxy_name:
+        proxy = next((item for item in config.get("proxies", []) if item.get("proxy_url") == proxy_url), None)
+        proxy_name = proxy.get("name") if proxy else "Custom Proxy"
+
+    for token in added + updated:
+        update_account_meta(
+            token,
+            note=note,
+            group_name=group_name or None,
+            proxy_name=proxy_name or None,
+            proxy_url=proxy_url or None,
+        )
+
     return JSONResponse(
         {
             "status": "success",
             "added_count": len(added),
-            "skipped_count": len(incoming_tokens) - len(added),
-            "message": "账号已导入；如需固定分组，请重新发布绑定规则。",
+            "updated_count": len(updated),
+            "skipped_count": len(incoming_tokens) - len(added) - len(updated),
+            "message": "账号已保存",
         }
     )
 
@@ -331,6 +355,40 @@ async def routing_admin_refresh_account(request: Request):
     )
 
 
+async def routing_admin_refresh_all_accounts(request: Request):
+    require_admin_auth(request)
+    refresh_tokens = [token for token in globals.token_list if detect_token_type(token) == "RefreshToken"]
+    if not refresh_tokens:
+        return JSONResponse(
+            {
+                "status": "success",
+                "message": "当前没有可刷新的 RefreshToken",
+                "success_count": 0,
+                "failed_count": 0,
+            }
+        )
+
+    success_count = 0
+    failed_tokens = []
+    for token in refresh_tokens:
+        try:
+            await rt2ac(token, force_refresh=True)
+            success_count += 1
+        except HTTPException:
+            failed_tokens.append(token)
+
+    message = f"批量刷新完成：成功 {success_count}，失败 {len(failed_tokens)}"
+    return JSONResponse(
+        {
+            "status": "success" if not failed_tokens else "partial",
+            "message": message,
+            "success_count": success_count,
+            "failed_count": len(failed_tokens),
+            "failed_tokens": failed_tokens,
+        }
+    )
+
+
 async def routing_admin_test_proxy(request: Request):
     require_admin_auth(request)
     try:
@@ -386,6 +444,7 @@ app.add_api_route("/admin/routing/account-bind", routing_admin_bind_account, met
 app.add_api_route("/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/delete", routing_admin_delete_account, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/refresh", routing_admin_refresh_account, methods=["POST"])
+app.add_api_route("/admin/routing/accounts/refresh-all", routing_admin_refresh_all_accounts, methods=["POST"])
 app.add_api_route("/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])
 
 if api_prefix:
@@ -399,4 +458,5 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/delete", routing_admin_delete_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/refresh", routing_admin_refresh_account, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/routing/accounts/refresh-all", routing_admin_refresh_all_accounts, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])

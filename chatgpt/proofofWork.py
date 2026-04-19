@@ -11,7 +11,7 @@ import pybase64
 import diskcache as dc
 
 from utils.Logger import logger
-from utils.configs import conversation_only
+from utils.configs import conversation_only, client_timezone, client_timezone_offset_min, accept_language, oai_language
 
 cores = [8, 16, 24, 32]
 timeLayout = "%a %b %d %Y %H:%M:%S"
@@ -92,7 +92,7 @@ navigator_key = [
     "requestMediaKeySystemAccess−function requestMediaKeySystemAccess() { [native code] }",
     "vendor−Google Inc.",
     "pdfViewerEnabled−true",
-    "language−zh-CN",
+    "language−en-US",
     "setAppBadge−function setAppBadge() { [native code] }",
     "geolocation−[object Geolocation]",
     "userAgentData−[object NavigatorUAData]",
@@ -428,8 +428,11 @@ async def get_dpl(service):
 
 
 def get_parse_time():
-    now = datetime.now(timezone(timedelta(hours=-5)))
-    return now.strftime(timeLayout) + " GMT-0500 (Eastern Standard Time)"
+    now = datetime.now(timezone(timedelta(minutes=client_timezone_offset_min)))
+    offset_hours = int(client_timezone_offset_min / 60)
+    offset_label = f"GMT{offset_hours:+03d}00"
+    timezone_name = client_timezone.split("/")[-1].replace("_", " ")
+    return now.strftime(timeLayout) + f" {offset_label} ({timezone_name})"
 
 
 @cache.memoize(expire=3600 * 24 * 7)
@@ -442,8 +445,8 @@ def get_config(user_agent, req_token=None):
         user_agent,
         random.choice(cached_scripts) if cached_scripts else "",
         cached_dpl,
-        "en-US",
-        "en-US,es-US,en,es",
+        oai_language,
+        accept_language,
         0,
         random.choice(navigator_key),
         random.choice(document_key),

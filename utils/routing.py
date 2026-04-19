@@ -38,6 +38,7 @@ def get_routing_config():
     config.setdefault("proxies", [])
     config.setdefault("groups", [])
     config.setdefault("bindings", {})
+    config.setdefault("account_meta", {})
     config.setdefault("updated_at", None)
     return config
 
@@ -58,6 +59,7 @@ def resolve_group_name(config, proxy_name, proxy_url):
 
 def build_group_assignments(tokens, proxies, group_size):
     group_size = max(int(group_size or 1), 1)
+    existing_config = get_routing_config()
     bindings = {}
     groups = []
     normalized_proxies = []
@@ -90,17 +92,20 @@ def build_group_assignments(tokens, proxies, group_size):
             "status": "enabled",
         })
         for token in group_tokens:
+            previous_meta = existing_config.get("account_meta", {}).get(token, {})
             bindings[token] = {
                 "group": group_name,
                 "proxy_name": proxy["name"],
                 "proxy_url": proxy["proxy_url"],
                 "updated_at": utc_now(),
+                "note": previous_meta.get("note", ""),
             }
 
     return {
         "proxies": normalized_proxies,
         "groups": groups,
         "bindings": bindings,
+        "account_meta": existing_config.get("account_meta", {}),
     }
 
 
@@ -144,15 +149,47 @@ def update_single_binding(token, proxy_name, proxy_url, group_name=None):
         "proxy_name": proxy_name,
         "proxy_url": proxy_url,
         "updated_at": utc_now(),
+        "note": config.get("account_meta", {}).get(token, {}).get("note", ""),
     }
     save_routing_config(config)
     sync_bindings_to_fp({token: config["bindings"][token]})
     return config["bindings"][token]
 
 
+def update_account_meta(token, note="", group_name=None, proxy_name=None, proxy_url=None):
+    config = get_routing_config()
+    meta = config.setdefault("account_meta", {}).get(token, {})
+    meta["note"] = (note or "").strip()
+    meta["updated_at"] = utc_now()
+    config["account_meta"][token] = meta
+
+    if proxy_url:
+        binding = config.setdefault("bindings", {}).get(token, {})
+        binding.update({
+            "group": (group_name or binding.get("group") or resolve_group_name(config, proxy_name or "Custom Proxy", proxy_url)),
+            "proxy_name": proxy_name or binding.get("proxy_name") or "Custom Proxy",
+            "proxy_url": proxy_url,
+            "updated_at": utc_now(),
+            "note": meta["note"],
+        })
+        config["bindings"][token] = binding
+    elif token in config.get("bindings", {}):
+        config["bindings"][token]["note"] = meta["note"]
+        config["bindings"][token]["updated_at"] = utc_now()
+
+    save_routing_config(config)
+    if token in config.get("bindings", {}):
+        sync_bindings_to_fp({token: config["bindings"][token]})
+    return {
+        "meta": config["account_meta"].get(token, {}),
+        "binding": config.get("bindings", {}).get(token),
+    }
+
+
 def remove_account_binding(token):
     config = get_routing_config()
     removed_binding = config.get("bindings", {}).pop(token, None)
+    config.get("account_meta", {}).pop(token, None)
 
     grouped_rules = {}
     for binding_token, binding in config.get("bindings", {}).items():
@@ -223,8 +260,10 @@ def get_dashboard_payload():
     accounts = []
     for index, token in enumerate(tokens, start=1):
         binding = bindings.get(token, {})
+        account_meta = config.get("account_meta", {}).get(token, {})
         status = "异常" if token in error_tokens else "正常"
         proxy_name = binding.get("proxy_name", "-")
+        proxy_url = binding.get("proxy_url", "")
         group_name = binding.get("group", "-")
         token_type = detect_token_type(token)
         refresh_info = globals.refresh_map.get(token, {}) if token_type == "RefreshToken" else {}
@@ -243,7 +282,9 @@ def get_dashboard_payload():
             "token_type": token_type,
             "status": status,
             "proxy_name": proxy_name,
+            "proxy_url": proxy_url,
             "group": group_name,
+            "note": account_meta.get("note", binding.get("note", "")),
             "updated_at": binding.get("updated_at") or globals.fp_map.get(token, {}).get("updated_at") or "-",
             "refresh_status": refresh_status,
             "refresh_updated_at": format_refresh_time(

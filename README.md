@@ -188,6 +188,28 @@ wget https://raw.githubusercontent.com/LanQian528/chat2api/main/docker-compose-w
 docker-compose up -d
 ```
 
+如果你是手动用 Docker Compose 部署的，默认不会自动安装宿主管理命令 `chat2api`，所以直接执行 `chat2api update` 会提示 `command not found`。  
+这种情况下有两种方式更新：
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+或者先安装管理命令：
+
+```bash
+cd chat2api
+bash deploy/install-command.sh
+```
+
+安装后即可使用：
+
+```bash
+chat2api status
+chat2api update
+chat2api logs
+```
+
 
 ## 常见问题
 
@@ -211,4 +233,3 @@ docker-compose up -d
 ## License
 
 MIT License
-

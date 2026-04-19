@@ -15,15 +15,15 @@ from chatgpt.fp import get_fp
 from gateway.reverseProxy import get_real_req_token
 from utils.Client import Client
 from utils.Logger import logger
-from utils.configs import proxy_url_list, chatgpt_base_url_list, authorization_list
+from utils.configs import proxy_url_list, chatgpt_base_url_list, authorization_list, accept_language, oai_language
 from utils.routing import get_bound_proxy
 
 base_headers = {
     'accept': '*/*',
     'accept-encoding': 'gzip, deflate, br, zstd',
-    'accept-language': 'en-US,en;q=0.9',
+    'accept-language': accept_language,
     'content-type': 'application/json',
-    'oai-language': 'en-US',
+    'oai-language': oai_language,
     'priority': 'u=1, i',
     'sec-fetch-dest': 'empty',
     'sec-fetch-mode': 'cors',
@@ -256,4 +256,3 @@ async def refresh(request: Request):
             return Response(content=json.dumps(auth_info), media_type="application/json")
 
     raise HTTPException(status_code=401, detail="Unauthorized")
-

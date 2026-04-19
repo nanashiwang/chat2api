@@ -30,9 +30,12 @@ from utils.configs import (
     auth_key,
     turnstile_solver_url,
     oai_language,
+    accept_language,
     check_model,
     chat_requirements_timeout,
     chat_request_timeout,
+    client_timezone,
+    client_timezone_offset_min,
 )
 
 
@@ -156,7 +159,7 @@ class ChatService:
         self.base_headers = {
             'accept': '*/*',
             'accept-encoding': 'gzip, deflate, br, zstd',
-            'accept-language': 'en-US,en;q=0.9',
+            'accept-language': accept_language,
             'content-type': 'application/json',
             'oai-language': oai_language,
             'origin': self.host_url,
@@ -361,8 +364,8 @@ class ChatService:
             "suggestions": [],
             "supported_encodings": [],
             "system_hints": [],
-            "timezone": "America/Los_Angeles",
-            "timezone_offset_min": -480,
+            "timezone": client_timezone,
+            "timezone_offset_min": client_timezone_offset_min,
             "variant_purpose": "comparison_implicit",
             "websocket_request_id": f"{uuid.uuid4()}",
         }
@@ -476,7 +479,7 @@ class ChatService:
             r = await self.s.post(
                 url,
                 headers=headers,
-                json={"file_name": file_name, "file_size": file_size, "reset_rate_limits": False, "timezone_offset_min": -480, "use_case": use_case},
+                json={"file_name": file_name, "file_size": file_size, "reset_rate_limits": False, "timezone_offset_min": client_timezone_offset_min, "use_case": use_case},
                 timeout=5,
             )
             if r.status_code == 200:

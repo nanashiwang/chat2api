@@ -11,6 +11,15 @@ from utils import configs
 from utils.routing import get_bound_proxy
 
 
+def select_impersonate(user_agent):
+    ua = (user_agent or "").lower()
+    if "edg/" in ua:
+        return "chrome123"
+    if "chrome/" in ua or "chromium/" in ua:
+        return "chrome123"
+    return "chrome123"
+
+
 def get_fp(req_token):
     fp = globals.fp_map.get(req_token, {})
     bound_proxy = get_bound_proxy(req_token)
@@ -25,8 +34,13 @@ def get_fp(req_token):
             globals.fp_map[req_token] = fp
             with open(globals.FP_FILE, "w", encoding="utf-8") as f:
                 json.dump(globals.fp_map, f, indent=4, ensure_ascii=False)
-        if globals.impersonate_list and "impersonate" in fp.keys() and fp["impersonate"] not in globals.impersonate_list:
-            fp["impersonate"] = random.choice(globals.impersonate_list)
+        if "user-agent" in fp.keys():
+            fp["impersonate"] = select_impersonate(fp["user-agent"])
+            globals.fp_map[req_token] = fp
+            with open(globals.FP_FILE, "w", encoding="utf-8") as f:
+                json.dump(globals.fp_map, f, indent=4, ensure_ascii=False)
+        elif globals.impersonate_list and "impersonate" in fp.keys() and fp["impersonate"] not in globals.impersonate_list:
+            fp["impersonate"] = globals.impersonate_list[-1]
             globals.fp_map[req_token] = fp
             with open(globals.FP_FILE, "w", encoding="utf-8") as f:
                 json.dump(globals.fp_map, f, indent=4)
@@ -44,13 +58,14 @@ def get_fp(req_token):
         })
         ua = ua_generator.generate(
             device=configs.device_tuple if configs.device_tuple else ('desktop'),
-            browser=configs.browser_tuple if configs.browser_tuple else ('chrome', 'edge', 'firefox', 'safari'),
+            browser=configs.browser_tuple if configs.browser_tuple else ('chrome', 'edge'),
             platform=configs.platform_tuple if configs.platform_tuple else ('windows', 'macos'),
             options=options
         )
+        user_agent = ua.text if not configs.user_agents_list else random.choice(configs.user_agents_list)
         fp = {
-            "user-agent": ua.text if not configs.user_agents_list else random.choice(configs.user_agents_list),
-            "impersonate": random.choice(globals.impersonate_list),
+            "user-agent": user_agent,
+            "impersonate": select_impersonate(user_agent),
             "proxy_url": bound_proxy or (random.choice(configs.proxy_url_list) if configs.proxy_url_list else None),
             "oai-device-id": str(uuid.uuid4())
         }
