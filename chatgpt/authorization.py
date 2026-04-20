@@ -54,7 +54,8 @@ async def verify_token(req_token):
         if req_token.startswith("eyJhbGciOi") or req_token.startswith("fk-"):
             access_token = req_token
             return access_token
-        elif len(req_token) == 45:
+        # 识别 RefreshToken：老版 45 字符 或 新版 Auth0 'rt_' 前缀（长度 ≥ 60）
+        elif (req_token.startswith("rt_") and len(req_token) >= 60) or len(req_token) == 45:
             try:
                 if req_token in globals.error_token_list:
                     raise HTTPException(status_code=401, detail="Error RefreshToken")
@@ -69,7 +70,8 @@ async def verify_token(req_token):
 
 async def refresh_all_tokens(force_refresh=False):
     for token in list(set(globals.token_list) - set(globals.error_token_list)):
-        if len(token) == 45:
+        # 老版 45 字符 或 新版 rt_ 前缀
+        if (token.startswith("rt_") and len(token) >= 60) or len(token) == 45:
             try:
                 await asyncio.sleep(0.5)
                 await rt2ac(token, force_refresh=force_refresh)

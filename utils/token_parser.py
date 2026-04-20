@@ -35,11 +35,18 @@ _TOKEN_KEY_NAMES = {
 
 
 def _classify(token: str) -> str:
-    """返回 'access' | 'refresh' | 'unknown'。"""
+    """返回 'access' | 'refresh' | 'unknown'。
+
+    与 utils/routing.detect_token_type 规则保持一致：
+      - access: 'eyJhbGciOi' / 'fk-' 开头
+      - refresh: 'rt_' 前缀且长度 ≥ 60（新版 Auth0 格式）或 长度 45（老版）
+    """
     if not token:
         return "unknown"
     if token.startswith("eyJhbGciOi") or token.startswith("fk-"):
         return "access"
+    if token.startswith("rt_") and len(token) >= 60:
+        return "refresh"
     if len(token) == 45:
         return "refresh"
     return "unknown"

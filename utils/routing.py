@@ -18,10 +18,20 @@ def mask_token(token):
 
 
 def detect_token_type(token):
+    """识别 token 类型。
+
+    规则：
+      - AccessToken: 以 'eyJhbGciOi' 或 'fk-' 开头（JWT / fakeopen token）
+      - RefreshToken: 老版 45 字符；或新版 Auth0 'rt_' 前缀（长度通常 80-100+）
+      - CustomToken: 其他
+    """
     if not token:
         return "Unknown"
     if token.startswith("eyJhbGciOi") or token.startswith("fk-"):
         return "AccessToken"
+    # 新版 Auth0 RefreshToken: rt_<nonce>.<payload>，长度 ≥ 60 才算有效
+    if token.startswith("rt_") and len(token) >= 60:
+        return "RefreshToken"
     if len(token) == 45:
         return "RefreshToken"
     return "CustomToken"

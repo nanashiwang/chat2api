@@ -305,14 +305,19 @@
 
             function renderFilePreview(data) {
                 parsedFileResult = data;
+                // 打印到控制台便于排查：F12 → Console 可见实际解析结果
+                console.log('[parse-file]', data.filename, 'stats:', data.stats,
+                    'warnings:', data.warnings || []);
+
                 importPreviewSource.textContent = `${data.filename || ''} · source=${data.stats.source}`;
                 statsRefresh.textContent = data.stats.refresh_count;
                 statsAccess.textContent = data.stats.access_count;
                 statsUnknown.textContent = data.stats.unknown_count;
 
-                previewPickRefresh.checked = data.stats.refresh_count > 0;
-                previewPickAccess.checked = false;
-                previewPickUnknown.checked = false;
+                // 根据每类数量决定勾选与禁用：空类目必须 disabled，避免用户误以为勾了就有效
+                applyCheckboxState(previewPickRefresh, data.stats.refresh_count, true);
+                applyCheckboxState(previewPickAccess,  data.stats.access_count,  false);
+                applyCheckboxState(previewPickUnknown, data.stats.unknown_count, false);
 
                 const sections = [
                     ['RefreshToken', data.masked.refresh_tokens, 'emerald'],
@@ -326,13 +331,32 @@
                 }).join('');
 
                 const warns = Array.isArray(data.warnings) ? data.warnings : [];
-                if (warns.length) {
+                const stats = data.stats || {};
+                const totalFound = (stats.refresh_count || 0) + (stats.access_count || 0) + (stats.unknown_count || 0);
+                if (totalFound === 0) {
+                    // 三类全为 0：最明显的警告
+                    previewWarnings.textContent = '文件中未识别到任何 token。请检查：(1) 纯文本请一行一个 token；(2) JSON 字段名建议为 refresh_token / access_token；(3) RefreshToken 长度必须恰好 45 字符。';
+                    previewWarnings.classList.remove('hidden');
+                } else if (warns.length) {
                     previewWarnings.textContent = warns.join(' · ');
                     previewWarnings.classList.remove('hidden');
                 } else {
                     previewWarnings.classList.add('hidden');
                 }
                 importFilePreview.classList.remove('hidden');
+            }
+
+            function applyCheckboxState(checkbox, count, defaultChecked) {
+                const label = checkbox.closest('label');
+                if (count > 0) {
+                    checkbox.disabled = false;
+                    checkbox.checked = defaultChecked;
+                    if (label) label.classList.remove('opacity-40', 'cursor-not-allowed');
+                } else {
+                    checkbox.disabled = true;
+                    checkbox.checked = false;
+                    if (label) label.classList.add('opacity-40', 'cursor-not-allowed');
+                }
             }
 
             function escapeHtml(s) {
@@ -505,14 +529,38 @@
                         alert('请先上传并解析文件');
                         return;
                     }
+                    // 分类目收集 + 精确报错
                     const picked = [];
-                    if (previewPickRefresh.checked) picked.push(...parsedFileResult.refresh_tokens);
-                    if (previewPickAccess.checked) picked.push(...parsedFileResult.access_tokens);
-                    if (previewPickUnknown.checked) picked.push(...parsedFileResult.unknown);
-                    if (!picked.length) {
+                    const emptyPicked = [];  // 勾选了但类目为空
+                    const checks = [
+                        ['RefreshToken', previewPickRefresh, parsedFileResult.refresh_tokens || []],
+                        ['AccessToken',  previewPickAccess,  parsedFileResult.access_tokens  || []],
+                        ['Unknown',      previewPickUnknown, parsedFileResult.unknown        || []],
+                    ];
+                    let anyChecked = false;
+                    for (const [label, cb, list] of checks) {
+                        if (!cb.checked) continue;
+                        anyChecked = true;
+                        if (list.length === 0) {
+                            emptyPicked.push(label);
+                        } else {
+                            picked.push(...list);
+                        }
+                    }
+                    if (!anyChecked) {
                         alert('请至少勾选一类 token 后再确认导入');
                         return;
                     }
+                    if (picked.length === 0) {
+                        alert(
+                            `你勾选的类目【${emptyPicked.join('、')}】在文件中没有识别到任何 token。\n` +
+                            `请查看预览卡片上方的统计：RefreshToken=${parsedFileResult.stats.refresh_count}、AccessToken=${parsedFileResult.stats.access_count}、Unknown=${parsedFileResult.stats.unknown_count}。\n` +
+                            `改为勾选数量 > 0 的类目，或重新选择另一份文件。`
+                        );
+                        return;
+                    }
+                    console.log('[import] picked', picked.length, 'tokens, from categories:',
+                        checks.filter(([_, cb]) => cb.checked).map(([l]) => l).join(','));
                     text = picked.join('\n');
                 } else {
                     text = importTextarea.value.trim();
