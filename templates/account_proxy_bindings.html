@@ -18,6 +18,7 @@
             const refreshAccountApi = `${basePath}/admin/routing/accounts/refresh`;
             const refreshAllAccountsApi = `${basePath}/admin/routing/accounts/refresh-all`;
             const testProxyApi = `${basePath}/admin/routing/test-proxy`;
+            const parseFileApi = `${basePath}/admin/routing/accounts/parse-file`;
 
             const summaryGrid = document.getElementById('summaryGrid');
             const ipGrid = document.getElementById('ipGrid');
@@ -47,9 +48,29 @@
             const modelsTestCommand = document.getElementById('modelsTestCommand');
             const copyModelsButton = document.getElementById('copyModelsButton');
             const copyChatButton = document.getElementById('copyChatButton');
+            // 文件导入 UI
+            const importTabText = document.getElementById('importTabText');
+            const importTabFile = document.getElementById('importTabFile');
+            const importTextSection = document.getElementById('importTextSection');
+            const importFileSection = document.getElementById('importFileSection');
+            const importFileInput = document.getElementById('importFileInput');
+            const importFileDropzone = document.getElementById('importFileDropzone');
+            const importFileName = document.getElementById('importFileName');
+            const importFilePreview = document.getElementById('importFilePreview');
+            const importPreviewSource = document.getElementById('importPreviewSource');
+            const statsRefresh = document.getElementById('statsRefresh');
+            const statsAccess = document.getElementById('statsAccess');
+            const statsUnknown = document.getElementById('statsUnknown');
+            const previewPickRefresh = document.getElementById('previewPickRefresh');
+            const previewPickAccess = document.getElementById('previewPickAccess');
+            const previewPickUnknown = document.getElementById('previewPickUnknown');
+            const previewTokenList = document.getElementById('previewTokenList');
+            const previewWarnings = document.getElementById('previewWarnings');
             let proxyOptions = [];
             let accountsCache = [];
             let editingToken = '';
+            let importMode = 'text';           // 'text' | 'file'
+            let parsedFileResult = null;       // 文件解析结果缓存
             const navLinks = Array.from(document.querySelectorAll('[data-nav-target]'));
 
             function parseProxyLines(raw) {
@@ -216,12 +237,23 @@
                 importModalTitle.textContent = mode === 'edit' ? '编辑账号' : '新增账号';
                 importModalDesc.textContent = mode === 'edit'
                     ? '可直接修改备注、分组和固定代理；保存后立即生效。'
-                    : '支持单个新增，也支持多行批量导入；备注、分组和固定代理会应用到本次输入的账号。';
+                    : '支持单个新增、多行粘贴，也可直接上传 .txt / .json 文件自动解析。';
                 importTextarea.value = account ? account.token : '';
                 importTextarea.readOnly = mode === 'edit';
                 accountNoteInput.value = account ? (account.note || '') : '';
                 accountGroupInput.value = account ? (account.group && account.group !== '-' ? account.group : '') : '';
                 accountProxySelect.value = account ? (account.proxy_url || '') : '';
+
+                // 编辑模式锁定为文本 tab（不可上传覆盖 token）
+                setImportMode('text');
+                if (mode === 'edit') {
+                    importTabFile.disabled = true;
+                    importTabFile.classList.add('opacity-40', 'cursor-not-allowed');
+                } else {
+                    importTabFile.disabled = false;
+                    importTabFile.classList.remove('opacity-40', 'cursor-not-allowed');
+                }
+
                 importModal.classList.remove('hidden');
                 importModal.classList.add('flex');
             }
@@ -233,8 +265,107 @@
                 accountNoteInput.value = '';
                 accountGroupInput.value = '';
                 accountProxySelect.value = '';
+                resetFilePreview();
+                setImportMode('text');
                 importModal.classList.add('hidden');
                 importModal.classList.remove('flex');
+            }
+
+            function setImportMode(mode) {
+                importMode = mode;
+                if (mode === 'file') {
+                    importTabText.classList.replace('border-slate-900', 'border-transparent');
+                    importTabText.classList.add('text-slate-500');
+                    importTabFile.classList.replace('border-transparent', 'border-slate-900');
+                    importTabFile.classList.remove('text-slate-500');
+                    importTextSection.classList.add('hidden');
+                    importFileSection.classList.remove('hidden');
+                } else {
+                    importTabFile.classList.replace('border-slate-900', 'border-transparent');
+                    importTabFile.classList.add('text-slate-500');
+                    importTabText.classList.replace('border-transparent', 'border-slate-900');
+                    importTabText.classList.remove('text-slate-500');
+                    importFileSection.classList.add('hidden');
+                    importTextSection.classList.remove('hidden');
+                }
+            }
+
+            function resetFilePreview() {
+                parsedFileResult = null;
+                importFileInput.value = '';
+                importFileName.textContent = '';
+                importFilePreview.classList.add('hidden');
+                previewTokenList.innerHTML = '';
+                previewWarnings.classList.add('hidden');
+                previewWarnings.textContent = '';
+                previewPickRefresh.checked = true;
+                previewPickAccess.checked = false;
+                previewPickUnknown.checked = false;
+            }
+
+            function renderFilePreview(data) {
+                parsedFileResult = data;
+                importPreviewSource.textContent = `${data.filename || ''} · source=${data.stats.source}`;
+                statsRefresh.textContent = data.stats.refresh_count;
+                statsAccess.textContent = data.stats.access_count;
+                statsUnknown.textContent = data.stats.unknown_count;
+
+                previewPickRefresh.checked = data.stats.refresh_count > 0;
+                previewPickAccess.checked = false;
+                previewPickUnknown.checked = false;
+
+                const sections = [
+                    ['RefreshToken', data.masked.refresh_tokens, 'emerald'],
+                    ['AccessToken',  data.masked.access_tokens,  'amber'],
+                    ['Unknown',      data.masked.unknown,        'slate'],
+                ];
+                previewTokenList.innerHTML = sections.map(([label, list, color]) => {
+                    if (!list.length) return '';
+                    const items = list.map(t => `<li class="truncate">${escapeHtml(t)}</li>`).join('');
+                    return `<div><div class="text-${color}-700 font-semibold mb-1">${label} (${list.length})</div><ul class="list-disc ml-5 space-y-0.5">${items}</ul></div>`;
+                }).join('');
+
+                const warns = Array.isArray(data.warnings) ? data.warnings : [];
+                if (warns.length) {
+                    previewWarnings.textContent = warns.join(' · ');
+                    previewWarnings.classList.remove('hidden');
+                } else {
+                    previewWarnings.classList.add('hidden');
+                }
+                importFilePreview.classList.remove('hidden');
+            }
+
+            function escapeHtml(s) {
+                return String(s).replace(/[&<>"']/g, c => ({
+                    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+                })[c]);
+            }
+
+            async function handleFileUpload(file) {
+                if (!file) return;
+                const ext = (file.name.split('.').pop() || '').toLowerCase();
+                if (!['txt', 'json'].includes(ext)) {
+                    alert('仅支持 .txt / .json 文件');
+                    return;
+                }
+                if (file.size > 2 * 1024 * 1024) {
+                    alert('文件过大，最大 2 MB');
+                    return;
+                }
+                importFileName.textContent = `已选择：${file.name}（${(file.size / 1024).toFixed(1)} KB）`;
+                const formData = new FormData();
+                formData.append('file', file);
+                try {
+                    const resp = await fetch(parseFileApi, { method: 'POST', body: formData });
+                    const data = await resp.json();
+                    if (!resp.ok) {
+                        alert(data.detail || '文件解析失败');
+                        return;
+                    }
+                    renderFilePreview(data);
+                } catch (e) {
+                    alert('网络错误：' + e.message);
+                }
             }
 
             async function loadDashboard() {
@@ -368,15 +499,33 @@
             });
 
             importSubmitButton.addEventListener('click', async () => {
-                const text = importTextarea.value.trim();
-                if (!text) {
-                    alert('请输入账号 token，一行一个');
-                    return;
+                let text = '';
+                if (importMode === 'file') {
+                    if (!parsedFileResult) {
+                        alert('请先上传并解析文件');
+                        return;
+                    }
+                    const picked = [];
+                    if (previewPickRefresh.checked) picked.push(...parsedFileResult.refresh_tokens);
+                    if (previewPickAccess.checked) picked.push(...parsedFileResult.access_tokens);
+                    if (previewPickUnknown.checked) picked.push(...parsedFileResult.unknown);
+                    if (!picked.length) {
+                        alert('请至少勾选一类 token 后再确认导入');
+                        return;
+                    }
+                    text = picked.join('\n');
+                } else {
+                    text = importTextarea.value.trim();
+                    if (!text) {
+                        alert('请输入账号 token，一行一个');
+                        return;
+                    }
+                    if (editingToken && text !== editingToken) {
+                        alert('编辑账号时不允许修改 token 本身');
+                        return;
+                    }
                 }
-                if (editingToken && text !== editingToken) {
-                    alert('编辑账号时不允许修改 token 本身');
-                    return;
-                }
+
                 const proxyUrl = accountProxySelect.value;
                 const proxy = proxyOptions.find((item) => item.proxy_url === proxyUrl);
                 const response = await fetch(importAccountsApi, {
@@ -396,6 +545,30 @@
                 if (response.ok) {
                     closeAccountModal();
                     await loadDashboard();
+                }
+            });
+
+            // Tab 切换
+            importTabText.addEventListener('click', () => setImportMode('text'));
+            importTabFile.addEventListener('click', () => {
+                if (!importTabFile.disabled) setImportMode('file');
+            });
+
+            // 文件选择：点击 / 拖拽
+            importFileDropzone.addEventListener('click', () => importFileInput.click());
+            importFileInput.addEventListener('change', () => handleFileUpload(importFileInput.files[0]));
+            importFileDropzone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                importFileDropzone.classList.add('bg-slate-100');
+            });
+            importFileDropzone.addEventListener('dragleave', () => {
+                importFileDropzone.classList.remove('bg-slate-100');
+            });
+            importFileDropzone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                importFileDropzone.classList.remove('bg-slate-100');
+                if (e.dataTransfer.files.length) {
+                    handleFileUpload(e.dataTransfer.files[0]);
                 }
             });
 
@@ -630,15 +803,79 @@
     </div>
 
     <div id="importAccountsModal" class="fixed inset-0 bg-slate-900/50 hidden items-center justify-center p-6">
-        <div class="w-full max-w-2xl bg-white rounded-3xl shadow-xl p-6">
+        <div class="w-full max-w-2xl bg-white rounded-3xl shadow-xl p-6 max-h-[90vh] overflow-y-auto">
             <div class="flex items-center justify-between mb-4">
                 <div>
                     <h3 id="importModalTitle" class="text-xl font-semibold">新增账号</h3>
-                    <p id="importModalDesc" class="text-sm text-slate-500 mt-1">一行一个 token，支持 AccessToken / RefreshToken 批量导入；如果是 RefreshToken，导入后可在列表里手动点“立即刷新”。</p>
+                    <p id="importModalDesc" class="text-sm text-slate-500 mt-1">一行一个 token，支持 AccessToken / RefreshToken 批量导入；也可上传文件自动解析。</p>
                 </div>
                 <button id="importModalClose" class="px-3 py-2 rounded-xl bg-slate-100 text-sm">关闭</button>
             </div>
-            <textarea id="importAccountsTextarea" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="eyJhbGciOi...&#10;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></textarea>
+
+            <!-- 输入模式 Tab -->
+            <div id="importTabs" class="flex gap-2 mb-4 border-b border-slate-200">
+                <button id="importTabText" data-mode="text" class="px-4 py-2 text-sm font-medium border-b-2 border-slate-900">粘贴文本</button>
+                <button id="importTabFile" data-mode="file" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-900">上传文件</button>
+            </div>
+
+            <!-- 文本模式 -->
+            <div id="importTextSection">
+                <textarea id="importAccountsTextarea" class="w-full min-h-72 p-4 rounded-2xl border border-slate-200 font-mono text-sm" placeholder="eyJhbGciOi...&#10;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></textarea>
+            </div>
+
+            <!-- 文件模式 -->
+            <div id="importFileSection" class="hidden">
+                <input type="file" id="importFileInput" accept=".txt,.json" class="hidden">
+                <div id="importFileDropzone" class="border-2 border-dashed border-slate-300 rounded-2xl p-8 text-center cursor-pointer hover:bg-slate-50">
+                    <p class="text-slate-700 font-medium">点击或拖拽文件到此处</p>
+                    <p class="text-xs text-slate-500 mt-1">支持 .txt / .json，单文件最大 2 MB</p>
+                    <p id="importFileName" class="text-xs text-slate-700 mt-3"></p>
+                </div>
+
+                <div id="importFilePreview" class="hidden mt-4 space-y-3">
+                    <div class="rounded-2xl bg-slate-50 p-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <h4 class="text-sm font-semibold">解析结果</h4>
+                            <span id="importPreviewSource" class="text-xs text-slate-500"></span>
+                        </div>
+                        <div class="grid grid-cols-3 gap-3 text-center text-sm">
+                            <div class="bg-white rounded-xl p-3">
+                                <div class="text-2xl font-bold text-emerald-600" id="statsRefresh">0</div>
+                                <div class="text-xs text-slate-500">RefreshToken</div>
+                            </div>
+                            <div class="bg-white rounded-xl p-3">
+                                <div class="text-2xl font-bold text-amber-600" id="statsAccess">0</div>
+                                <div class="text-xs text-slate-500">AccessToken</div>
+                            </div>
+                            <div class="bg-white rounded-xl p-3">
+                                <div class="text-2xl font-bold text-slate-400" id="statsUnknown">0</div>
+                                <div class="text-xs text-slate-500">未知</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <label class="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 cursor-pointer">
+                        <input type="checkbox" id="previewPickRefresh" checked class="accent-emerald-600">
+                        <span class="text-sm">导入 RefreshToken（<strong class="text-emerald-700">推荐</strong>）</span>
+                    </label>
+                    <label class="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 cursor-pointer">
+                        <input type="checkbox" id="previewPickAccess" class="accent-amber-600">
+                        <span class="text-sm">导入 AccessToken（默认不选，2 小时后失效）</span>
+                    </label>
+                    <label class="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 cursor-pointer">
+                        <input type="checkbox" id="previewPickUnknown" class="accent-slate-500">
+                        <span class="text-sm">导入未知类型（谨慎）</span>
+                    </label>
+
+                    <details class="rounded-xl border border-slate-200">
+                        <summary class="cursor-pointer px-4 py-3 text-sm font-medium">查看识别明细（token 已脱敏）</summary>
+                        <div id="previewTokenList" class="px-4 pb-4 text-xs font-mono text-slate-600 space-y-2"></div>
+                    </details>
+
+                    <div id="previewWarnings" class="hidden rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700"></div>
+                </div>
+            </div>
+
             <div class="grid md:grid-cols-2 gap-4 mt-4">
                 <div>
                     <label class="block text-sm text-slate-500 mb-2">备注</label>

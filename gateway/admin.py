@@ -2,7 +2,7 @@ import json
 import time
 from collections import defaultdict, deque
 
-from fastapi import HTTPException, Request
+from fastapi import File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app import app, templates
@@ -25,6 +25,8 @@ from chatgpt.refreshToken import rt2ac
 
 ADMIN_COOKIE_NAME = "admin_auth"
 ADMIN_COOKIE_MAX_AGE = 8 * 60 * 60
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024  # 2MB
+ALLOWED_IMPORT_EXTENSIONS = {"txt", "json"}
 rate_limit_buckets = defaultdict(deque)
 failed_login_buckets = defaultdict(deque)
 
@@ -330,6 +332,43 @@ async def routing_admin_import_accounts(request: Request):
     )
 
 
+async def routing_admin_parse_file(request: Request, file: UploadFile = File(...)):
+    """上传文件并解析其中的 token，仅返回预览，不写入。前端确认后再调用 import 路由。"""
+    require_admin_auth(request)
+
+    filename = (file.filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="缺少文件名")
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ALLOWED_IMPORT_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件后缀: .{ext}；仅允许 {sorted(ALLOWED_IMPORT_EXTENSIONS)}",
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大：最大 {MAX_UPLOAD_BYTES // 1024} KB",
+        )
+
+    from utils.token_parser import mask_token, parse_file
+    result = parse_file(filename, content)
+
+    # 为前端预览附加 masked 版本，避免整屏泄漏 token
+    result["filename"] = filename
+    result["masked"] = {
+        "refresh_tokens": [mask_token(t) for t in result["refresh_tokens"]],
+        "access_tokens": [mask_token(t) for t in result["access_tokens"]],
+        "unknown": [mask_token(t) for t in result["unknown"]],
+    }
+    return JSONResponse(result)
+
+
 async def routing_admin_delete_account(request: Request):
     require_admin_auth(request)
     try:
@@ -486,6 +525,7 @@ app.add_api_route("/admin/login", routing_admin_login_submit, methods=["POST"])
 app.add_api_route("/admin/logout", routing_admin_logout, methods=["POST"])
 app.add_api_route("/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
+app.add_api_route("/admin/routing/accounts/parse-file", routing_admin_parse_file, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/delete", routing_admin_delete_account, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/refresh", routing_admin_refresh_account, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/refresh-all", routing_admin_refresh_all_accounts, methods=["POST"])
@@ -500,6 +540,7 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/logout", routing_admin_logout, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/account-bind", routing_admin_bind_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/import", routing_admin_import_accounts, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/routing/accounts/parse-file", routing_admin_parse_file, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/delete", routing_admin_delete_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/refresh", routing_admin_refresh_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/refresh-all", routing_admin_refresh_all_accounts, methods=["POST"])
