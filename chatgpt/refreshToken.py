@@ -63,6 +63,14 @@ async def chat_refresh(refresh_token):
         "redirect_uri": openai_auth_redirect_uri,
         "refresh_token": refresh_token,
     }
+    # Auth0 是 API 端点，必须走纯 API 风格调用：
+    #   - impersonate=None 关闭 Safari/Chrome TLS 指纹模拟，避免被 WAF 判定为"浏览器调 API"
+    #   - 显式带 Accept/Content-Type/User-Agent，让 Auth0 正确路由到 /oauth/token 而非 Universal Login 页
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "ChatGPT/1.2025.084 (iOS 17.5.1; iPhone15,3; build 1402)",
+    }
     session_id = hashlib.md5(refresh_token.encode()).hexdigest()
     bound_proxy = get_bound_proxy(refresh_token)
     proxy_url = bound_proxy or (random.choice(proxy_url_list).replace("{}", session_id) if proxy_url_list else None)
@@ -71,10 +79,15 @@ async def chat_refresh(refresh_token):
     refresh_meta = globals.refresh_map.get(refresh_token, {})
     refresh_meta["last_proxy"] = proxy_url or ""
     globals.refresh_map[refresh_token] = refresh_meta
-    client = Client(proxy=proxy_url)
+    client = Client(proxy=proxy_url, impersonate=None)
     token_prefix = refresh_token[:8]
     try:
-        r = await client.post("https://auth0.openai.com/oauth/token", json=data, timeout=15)
+        r = await client.post(
+            "https://auth0.openai.com/oauth/token",
+            json=data,
+            headers=headers,
+            timeout=15,
+        )
         raw_text = (r.text or "").strip()
         content_type = r.headers.get("content-type", "")
 
