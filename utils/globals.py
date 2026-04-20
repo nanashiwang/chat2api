@@ -13,6 +13,10 @@ FP_FILE = os.path.join(DATA_FOLDER, "fp_map.json")
 ROUTING_CONFIG_FILE = os.path.join(DATA_FOLDER, "routing_config.json")
 SEED_MAP_FILE = os.path.join(DATA_FOLDER, "seed_map.json")
 CONVERSATION_MAP_FILE = os.path.join(DATA_FOLDER, "conversation_map.json")
+# Antiban 持久化文件（PR-1 骨架）
+ANTIBAN_BUCKET_FILE = os.path.join(DATA_FOLDER, "antiban_bucket.json")
+ANTIBAN_GEO_FILE = os.path.join(DATA_FOLDER, "antiban_geo.json")
+ANTIBAN_DEAD_FILE = os.path.join(DATA_FOLDER, "antiban_dead.json")
 
 count = 0
 token_list = []
@@ -23,6 +27,10 @@ fp_map = {}
 routing_config = {}
 seed_map = {}
 conversation_map = {}
+# Antiban 内存状态（PR-1 骨架，后续 PR 填充）
+antiban_bucket = {"buckets": {}, "account_index": {}}
+antiban_geo_cache = {}
+antiban_dead_tokens = {}
 impersonate_list = [
     "chrome119",
     "chrome120",
@@ -85,6 +93,30 @@ if os.path.exists(CONVERSATION_MAP_FILE):
             conversation_map = {}
 else:
     conversation_map = {}
+
+# Antiban 冷启动加载（骨架：无数据时保持默认空结构）
+if os.path.exists(ANTIBAN_BUCKET_FILE):
+    with open(ANTIBAN_BUCKET_FILE, "r", encoding="utf-8") as f:
+        try:
+            antiban_bucket = json.load(f)
+            antiban_bucket.setdefault("buckets", {})
+            antiban_bucket.setdefault("account_index", {})
+        except:
+            antiban_bucket = {"buckets": {}, "account_index": {}}
+
+if os.path.exists(ANTIBAN_GEO_FILE):
+    with open(ANTIBAN_GEO_FILE, "r", encoding="utf-8") as f:
+        try:
+            antiban_geo_cache = json.load(f)
+        except:
+            antiban_geo_cache = {}
+
+if os.path.exists(ANTIBAN_DEAD_FILE):
+    with open(ANTIBAN_DEAD_FILE, "r", encoding="utf-8") as f:
+        try:
+            antiban_dead_tokens = json.load(f)
+        except:
+            antiban_dead_tokens = {}
 
 if os.path.exists(TOKENS_FILE):
     with open(TOKENS_FILE, "r", encoding="utf-8") as f:

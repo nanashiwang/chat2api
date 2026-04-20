@@ -80,6 +80,31 @@ init_group_size = int(os.getenv('INIT_GROUP_SIZE', 25))
 init_apply_on_empty = is_true(os.getenv('INIT_APPLY_ON_EMPTY', True))
 init_force = is_true(os.getenv('INIT_FORCE', False))
 
+# ========================= Antiban (风控规避层) =========================
+# 总开关；默认关闭，保持向后兼容
+enable_antiban = is_true(os.getenv('ENABLE_ANTIBAN', False))
+# IP 粘性桶：每个代理最多容纳的账号数
+bucket_max_accounts_per_ip = int(os.getenv('BUCKET_MAX_ACCOUNTS_PER_IP', 5))
+# 严格 IP 绑定：开启后账号一旦绑定 IP 即永不漂移
+strict_ip_binding = is_true(os.getenv('STRICT_IP_BINDING', True))
+# 账号级最小请求间隔秒数（Team/Plus 默认 60s）
+account_min_interval_seconds = int(os.getenv('ACCOUNT_MIN_INTERVAL_SECONDS', 60))
+# 免费账号最小请求间隔秒数（通常需更长）
+free_account_min_interval_seconds = int(os.getenv('FREE_ACCOUNT_MIN_INTERVAL_SECONDS', 180))
+# 冷却抖动比例（±jitter）
+account_cooldown_jitter = float(os.getenv('ACCOUNT_COOLDOWN_JITTER', 0.3))
+# 账号排队最长等待秒数；超过则返回 503 让上游切换
+account_max_wait_seconds = int(os.getenv('ACCOUNT_MAX_WAIT_SECONDS', 30))
+# Geo 查询服务提供商：ip-api | ipinfo
+ip_geo_provider = os.getenv('IP_GEO_PROVIDER', 'ip-api')
+# Geo 缓存 TTL（天）
+ip_geo_cache_ttl_days = int(os.getenv('IP_GEO_CACHE_TTL_DAYS', 30))
+# 熔断参数
+circuit_429_cooldown = int(os.getenv('CIRCUIT_429_COOLDOWN', 1800))
+circuit_403_cooldown = int(os.getenv('CIRCUIT_403_COOLDOWN', 3600))
+circuit_dead_account_recheck_hours = int(os.getenv('CIRCUIT_DEAD_ACCOUNT_RECHECK_HOURS', 24))
+circuit_bucket_heal_minutes = int(os.getenv('CIRCUIT_BUCKET_HEAL_MINUTES', 30))
+
 with open('version.txt') as f:
     version = f.read().strip()
 
@@ -124,4 +149,13 @@ logger.info("INIT_TOKENS:       " + str(bool(init_tokens)))
 logger.info("INIT_PROXIES:      " + str(bool(init_proxies)))
 logger.info("INIT_GROUP_SIZE:   " + str(init_group_size))
 logger.info("INIT_FORCE:        " + str(init_force))
+logger.info("------------------------- Antiban --------------------------")
+logger.info("ENABLE_ANTIBAN:    " + str(enable_antiban))
+logger.info("STRICT_IP_BINDING: " + str(strict_ip_binding))
+logger.info("BUCKET_MAX_ACCOUNTS_PER_IP: " + str(bucket_max_accounts_per_ip))
+logger.info("ACCOUNT_MIN_INTERVAL_SECONDS: " + str(account_min_interval_seconds))
+logger.info("ACCOUNT_MAX_WAIT_SECONDS:     " + str(account_max_wait_seconds))
+logger.info("IP_GEO_PROVIDER:   " + str(ip_geo_provider))
+logger.info("CIRCUIT_429_COOLDOWN: " + str(circuit_429_cooldown))
+logger.info("CIRCUIT_403_COOLDOWN: " + str(circuit_403_cooldown))
 logger.info("-" * 60)

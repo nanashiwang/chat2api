@@ -427,19 +427,34 @@ async def get_dpl(service):
         return False
 
 
-def get_parse_time():
-    now = datetime.now(timezone(timedelta(minutes=client_timezone_offset_min)))
-    offset_hours = int(client_timezone_offset_min / 60)
+def get_parse_time(tz_offset_min=None, tz_name=None):
+    """支持 antiban 动态覆盖时区，默认沿用全局配置。"""
+    offset = tz_offset_min if tz_offset_min is not None else client_timezone_offset_min
+    name = tz_name if tz_name else client_timezone
+    now = datetime.now(timezone(timedelta(minutes=offset)))
+    offset_hours = int(offset / 60)
     offset_label = f"GMT{offset_hours:+03d}00"
-    timezone_name = client_timezone.split("/")[-1].replace("_", " ")
+    timezone_name = name.split("/")[-1].replace("_", " ")
     return now.strftime(timeLayout) + f" {offset_label} ({timezone_name})"
 
 
 @cache.memoize(expire=3600 * 24 * 7)
-def get_config(user_agent, req_token=None):
+def get_config(user_agent, req_token=None, tz_offset_min=None, tz_name=None):
+    # Antiban: 让 screen / cores 与账号的持久化指纹一致（首次生成后不变）
+    screen_sum = None
+    cores_val = None
+    try:
+        from utils import configs as _configs
+        if _configs.enable_antiban and req_token:
+            from utils.antiban import fingerprint as _fp
+            screen_sum = _fp.get_screen_resolution_sum(req_token)
+            cores_val = _fp.get_hardware_concurrency(req_token)
+    except Exception:
+        pass
+
     config = [
-        random.choice([1920 + 1080, 2560 + 1440, 1920 + 1200, 2560 + 1600]),
-        get_parse_time(),
+        screen_sum if screen_sum is not None else random.choice([1920 + 1080, 2560 + 1440, 1920 + 1200, 2560 + 1600]),
+        get_parse_time(tz_offset_min, tz_name),
         4294705152,
         0,
         user_agent,
@@ -454,7 +469,7 @@ def get_config(user_agent, req_token=None):
         time.perf_counter() * 1000,
         str(uuid.uuid4()),
         "",
-        random.choice(cores),
+        cores_val if cores_val is not None else random.choice(cores),
         time.time() * 1000 - (time.perf_counter() * 1000),
     ]
     return config

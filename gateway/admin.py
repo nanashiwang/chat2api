@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from app import app, templates
 from utils.Client import Client
 from utils.configs import admin_password, api_prefix, authorization_list
+from utils.Logger import logger
 from utils.routing import (
     build_group_assignments,
     detect_token_type,
@@ -27,6 +28,18 @@ ADMIN_COOKIE_MAX_AGE = 8 * 60 * 60
 rate_limit_buckets = defaultdict(deque)
 failed_login_buckets = defaultdict(deque)
 
+if not admin_password:
+    logger.warning(
+        "[admin] ADMIN_PASSWORD is NOT configured. "
+        "Admin backend endpoints are disabled for safety. "
+        "Set ADMIN_PASSWORD to a strong independent secret (do NOT reuse AUTHORIZATION)."
+    )
+elif authorization_list and admin_password in authorization_list:
+    logger.warning(
+        "[admin] ADMIN_PASSWORD is identical to one of AUTHORIZATION entries. "
+        "Use a distinct secret to avoid privilege escalation via API key leakage."
+    )
+
 
 def admin_login_path():
     if api_prefix:
@@ -35,9 +48,15 @@ def admin_login_path():
 
 
 def get_admin_secrets():
+    """管理后台专用密码集合。
+
+    安全要求：
+      - 必须独立配置 ADMIN_PASSWORD，不再回退到 AUTHORIZATION；
+      - 未配置时返回空列表 → require_admin_auth / 登录接口一律 403。
+    """
     if admin_password:
         return [admin_password]
-    return authorization_list
+    return []
 
 
 def get_client_key(request: Request):
@@ -93,8 +112,12 @@ def get_current_admin_token(request: Request):
 
 
 def require_admin_auth(request: Request):
+    # 安全要求：未配置 ADMIN_PASSWORD 时，后台接口一律拒绝（不再放行）
     if not get_admin_secrets():
-        return
+        raise HTTPException(
+            status_code=503,
+            detail="Admin backend disabled: ADMIN_PASSWORD is not configured.",
+        )
     check_rate_limit(f"admin:{get_client_key(request)}", 120, 60)
     if not is_admin_authorized(request):
         raise HTTPException(status_code=401, detail="Admin authorization required")
@@ -102,6 +125,11 @@ def require_admin_auth(request: Request):
 
 async def routing_admin_login_page(request: Request):
     check_rate_limit(f"admin-page:{get_client_key(request)}", 60, 60)
+    if not get_admin_secrets():
+        raise HTTPException(
+            status_code=503,
+            detail="Admin backend disabled: ADMIN_PASSWORD is not configured.",
+        )
     if is_admin_authorized(request):
         return RedirectResponse(url=f"/{api_prefix}/admin/routing" if api_prefix else "/admin/routing", status_code=302)
     return templates.TemplateResponse(
@@ -117,6 +145,11 @@ async def routing_admin_login_submit(request: Request):
     client_key = get_client_key(request)
     ensure_login_not_locked(client_key)
     check_rate_limit(f"admin-login:{client_key}", 10, 300)
+    if not get_admin_secrets():
+        raise HTTPException(
+            status_code=503,
+            detail="Admin backend disabled: ADMIN_PASSWORD is not configured.",
+        )
     form = await request.form()
     password = (form.get("password") or "").strip()
     if not password or password not in get_admin_secrets():
@@ -136,32 +169,43 @@ async def routing_admin_login_submit(request: Request):
         status_code=302,
     )
     failed_login_buckets.pop(client_key, None)
+    # Cookie 安全：HttpOnly 阻止 JS 读取；SameSite=Strict 防 CSRF；
+    # Secure 在 HTTPS 下生效（HTTP 反代内网环境 request.url.scheme 为 http，自动不发 Secure）
+    is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    cookie_path = f"/{api_prefix}/admin" if api_prefix else "/admin"
     response.set_cookie(
         ADMIN_COOKIE_NAME,
         value=password,
         httponly=True,
-        samesite="lax",
+        secure=is_https,
+        samesite="strict",
         max_age=ADMIN_COOKIE_MAX_AGE,
+        path=cookie_path,
     )
     return response
 
 
 async def routing_admin_logout(request: Request):
     response = RedirectResponse(url=admin_login_path(), status_code=302)
-    response.delete_cookie(ADMIN_COOKIE_NAME)
+    cookie_path = f"/{api_prefix}/admin" if api_prefix else "/admin"
+    response.delete_cookie(ADMIN_COOKIE_NAME, path=cookie_path)
     return response
 
 
 async def routing_admin_page(request: Request):
     check_rate_limit(f"admin-page:{get_client_key(request)}", 60, 60)
-    if get_admin_secrets() and not is_admin_authorized(request):
+    if not get_admin_secrets():
+        raise HTTPException(
+            status_code=503,
+            detail="Admin backend disabled: ADMIN_PASSWORD is not configured.",
+        )
+    if not is_admin_authorized(request):
         return RedirectResponse(url=admin_login_path(), status_code=302)
     return templates.TemplateResponse(
         "account_proxy_bindings.html",
         {
             "request": request,
             "api_prefix": api_prefix,
-            "admin_token": get_current_admin_token(request),
         },
     )
 

@@ -44,7 +44,11 @@ def get_fp(req_token):
             globals.fp_map[req_token] = fp
             with open(globals.FP_FILE, "w", encoding="utf-8") as f:
                 json.dump(globals.fp_map, f, indent=4)
-        if configs.user_agents_list and "user-agent" in fp.keys() and fp["user-agent"] not in configs.user_agents_list:
+        # 严格指纹绑定：开启后绝不因 user_agents_list 变化而漂移 UA，保留历史画像
+        if (not (configs.enable_antiban and configs.strict_ip_binding)
+                and configs.user_agents_list
+                and "user-agent" in fp.keys()
+                and fp["user-agent"] not in configs.user_agents_list):
             fp["user-agent"] = random.choice(configs.user_agents_list)
             globals.fp_map[req_token] = fp
             with open(globals.FP_FILE, "w", encoding="utf-8") as f:

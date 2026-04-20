@@ -8,7 +8,6 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const apiPrefix = "{{ api_prefix }}";
-            const adminToken = {{ admin_token|tojson }};
             const basePath = apiPrefix === "None" ? "" : `/${apiPrefix}`;
             const dataApi = `${basePath}/admin/routing/data`;
             const saveApi = `${basePath}/admin/routing/save`;
@@ -161,7 +160,8 @@
 
             function buildTestCommands(payload) {
                 const origin = window.location.origin;
-                const authToken = adminToken || '请替换为你的 AUTHORIZATION';
+                // 安全：不再把 admin 凭证写入前端。样例里使用占位符，由使用者手工替换为 AUTHORIZATION
+                const authToken = '<YOUR_AUTHORIZATION>';
                 const model = (payload && payload.accounts && payload.accounts.length) ? 'gpt-5' : 'gpt-5';
                 modelsTestCommand.textContent = `curl --location '${origin}${basePath}/v1/models' \\\n  --header 'Authorization: Bearer ${authToken}'`;
                 apiTestCommand.textContent = `curl --location '${origin}${basePath}/v1/chat/completions' \\\n  --header 'Content-Type: application/json' \\\n  --header 'Authorization: Bearer ${authToken}' \\\n  --data '{\n  "model": "${model}",\n  "messages": [\n    {"role": "user", "content": "你好，请回复 test ok"}\n  ],\n  "stream": false\n}'`;

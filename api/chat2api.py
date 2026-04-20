@@ -15,6 +15,8 @@ from utils.bootstrap import initialize_from_env
 from utils.Logger import logger
 from utils.configs import api_prefix, scheduled_refresh, history_disabled
 from utils.retry import async_retry
+from utils import antiban
+from utils.antiban import circuit as antiban_circuit
 
 scheduler = AsyncIOScheduler()
 
@@ -22,11 +24,26 @@ scheduler = AsyncIOScheduler()
 @app.on_event("startup")
 async def app_start():
     initialize_from_env()
+    await antiban.init()
+
+    # Antiban 自愈定时任务
+    from utils.configs import enable_antiban, circuit_bucket_heal_minutes
+    if enable_antiban:
+        scheduler.add_job(
+            id='antiban_heal',
+            func=antiban_circuit.scheduled_heal,
+            trigger='interval',
+            minutes=max(int(circuit_bucket_heal_minutes), 5),
+        )
+
     if scheduled_refresh:
         scheduler.add_job(id='refresh', func=refresh_all_tokens, trigger='cron', hour=3, minute=0, day='*/2',
                           kwargs={'force_refresh': True})
         scheduler.start()
         asyncio.get_event_loop().call_later(0, lambda: asyncio.create_task(refresh_all_tokens(force_refresh=False)))
+    elif enable_antiban:
+        # 只有 antiban 启用、没启用 refresh 时，也需要把 scheduler 跑起来
+        scheduler.start()
 
 
 async def to_send_conversation(request_data, req_token):

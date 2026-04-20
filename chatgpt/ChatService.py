@@ -18,6 +18,7 @@ from chatgpt.proofofWork import get_config, get_dpl, get_answer_token, get_requi
 
 from utils.Client import Client
 from utils.Logger import logger
+from utils import antiban
 from utils.configs import (
     chatgpt_base_url_list,
     ark0se_token_url_list,
@@ -36,6 +37,7 @@ from utils.configs import (
     chat_request_timeout,
     client_timezone,
     client_timezone_offset_min,
+    enable_antiban,
 )
 
 
@@ -51,6 +53,7 @@ class ChatService:
         self.ss = None
         self.ws = None
         self.dynamic_model = False
+        self.antiban_ctx = None
 
     def model_not_found(self):
         return HTTPException(
@@ -126,10 +129,23 @@ class ChatService:
             self.account_id = None
 
     async def initialize_request_context(self):
+        # Antiban: 在读取 fp 之前获取上下文（bucket/geo/冷却/熔断）
+        self.antiban_ctx = await antiban.acquire_context(self.req_token)
+
         self.fp = get_fp(self.req_token).copy()
         self.proxy_url = self.fp.pop("proxy_url", None)
         self.impersonate = self.fp.pop("impersonate", "safari15_3")
         self.user_agent = self.fp.get("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0")
+
+        # Antiban 强制粘性 IP：以桶内 proxy 覆盖 fp 中的 proxy_url（若已分配）
+        if self.antiban_ctx and self.antiban_ctx.enabled and self.antiban_ctx.proxy_url:
+            if self.proxy_url != self.antiban_ctx.proxy_url:
+                logger.info(
+                    f"[antiban] proxy overridden by bucket: "
+                    f"{self.proxy_url} -> {self.antiban_ctx.proxy_url}"
+                )
+            self.proxy_url = self.antiban_ctx.proxy_url
+
         logger.info(f"Request token: {self.req_token}")
         logger.info(f"Request proxy: {self.proxy_url}")
         logger.info(f"Request UA: {self.user_agent}")
@@ -182,6 +198,18 @@ class ChatService:
         if auth_key:
             self.base_headers['authkey'] = auth_key
 
+        # Antiban: 用 geo 结果覆盖 accept-language / oai-language
+        if self.antiban_ctx and self.antiban_ctx.enabled and self.antiban_ctx.header_overrides:
+            for k, v in self.antiban_ctx.header_overrides.items():
+                if k.startswith("_") or not v:
+                    continue
+                self.base_headers[k] = v
+            logger.info(
+                f"[antiban] headers overridden by geo: "
+                f"accept-language={self.base_headers.get('accept-language')} "
+                f"oai-language={self.base_headers.get('oai-language')}"
+            )
+
     async def set_dynamic_data(self, data):
         await self.resolve_auth_context()
 
@@ -219,7 +247,8 @@ class ChatService:
         url = f'{self.base_url}/sentinel/chat-requirements'
         headers = self.base_headers.copy()
         try:
-            config = get_config(self.user_agent, self.req_token)
+            tz_offset = self.antiban_ctx.tz_offset_min if (self.antiban_ctx and self.antiban_ctx.enabled) else None
+            config = get_config(self.user_agent, self.req_token, tz_offset)
             p = get_requirements_token(config)
             data = {'p': p}
             r = await self.ss.post(url, headers=headers, json=data, timeout=chat_requirements_timeout)
@@ -294,6 +323,8 @@ class ChatService:
                     detail = r.json().get("detail", r.json())
                 else:
                     detail = r.text
+                # Antiban: 分级上报错误（IP 降级 / 账号冷却延长 / 黑名单）
+                await antiban.report_error(self.antiban_ctx, r.status_code, detail)
                 if "cf_chl_opt" in detail:
                     raise HTTPException(status_code=r.status_code, detail="cf_chl_opt")
                 if r.status_code == 429:
@@ -369,6 +400,11 @@ class ChatService:
             "variant_purpose": "comparison_implicit",
             "websocket_request_id": f"{uuid.uuid4()}",
         }
+        # Antiban: 按 IP 地域覆盖时区（与 UA / accept-language 一致）
+        if self.antiban_ctx and self.antiban_ctx.enabled and self.antiban_ctx.tz_offset_min is not None:
+            self.chat_request["timezone_offset_min"] = self.antiban_ctx.tz_offset_min
+            if self.antiban_ctx.header_overrides.get("_timezone_name"):
+                self.chat_request["timezone"] = self.antiban_ctx.header_overrides["_timezone_name"]
         if self.conversation_id:
             self.chat_request['conversation_id'] = self.conversation_id
         return self.chat_request
@@ -393,13 +429,20 @@ class ChatService:
                 else:
                     if "cf_chl_opt" in rtext:
                         # logger.error(f"Failed to send conversation: cf_chl_opt")
+                        await antiban.report_error(self.antiban_ctx, r.status_code, "cf_chl_opt")
                         raise HTTPException(status_code=r.status_code, detail="cf_chl_opt")
                     if r.status_code == 429:
                         # logger.error(f"Failed to send conversation: rate-limit")
+                        await antiban.report_error(self.antiban_ctx, r.status_code, "rate-limit")
                         raise HTTPException(status_code=r.status_code, detail="rate-limit")
                     detail = r.text[:100]
                 # logger.error(f"Failed to send conversation: {detail}")
+                await antiban.report_error(self.antiban_ctx, r.status_code, detail)
                 raise HTTPException(status_code=r.status_code, detail=detail)
+
+            # 200 OK: 立即标记账号使用（真正 success 在响应流完成后由上游调度更稳，
+            # 但 200 即可代表风控校验通过，此处记录冷却足够）
+            await antiban.report_success(self.antiban_ctx)
 
             content_type = r.headers.get("Content-Type", "")
             if "text/event-stream" in content_type:
