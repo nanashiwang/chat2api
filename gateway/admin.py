@@ -3,7 +3,7 @@ import time
 from collections import defaultdict, deque
 
 from fastapi import File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from app import app, templates
 from utils.Client import Client
@@ -517,6 +517,70 @@ async def routing_admin_test_proxy(request: Request):
         await client.close()
 
 
+async def routing_admin_logs_tail(request: Request):
+    """轮询日志：支持增量 since_id、级别、关键字筛选。"""
+    require_admin_auth(request)
+
+    from utils.log_buffer import log_buffer
+
+    params = request.query_params
+    since_id = params.get("since_id")
+    try:
+        since_id_val = int(since_id) if since_id not in (None, "") else None
+    except ValueError:
+        since_id_val = None
+
+    level = (params.get("level") or "").strip().upper() or None
+    keyword = (params.get("keyword") or "").strip() or None
+    try:
+        limit = int(params.get("limit") or 500)
+    except ValueError:
+        limit = 500
+    limit = max(1, min(limit, 2000))
+
+    items = log_buffer.snapshot(
+        since_id=since_id_val,
+        level=level,
+        keyword=keyword,
+        limit=limit,
+    )
+    return JSONResponse(
+        {
+            "items": items,
+            "latest_id": log_buffer.latest_id,
+            "capacity": log_buffer.capacity,
+            "total": len(log_buffer),
+        }
+    )
+
+
+async def routing_admin_logs_download(request: Request):
+    """下载日志文本；scope=all 下载全部，否则按筛选下载当前视图。"""
+    require_admin_auth(request)
+
+    from utils.log_buffer import log_buffer, render_plaintext
+
+    params = request.query_params
+    scope = (params.get("scope") or "filtered").lower()
+
+    if scope == "all":
+        records = log_buffer.snapshot_all()
+    else:
+        level = (params.get("level") or "").strip().upper() or None
+        keyword = (params.get("keyword") or "").strip() or None
+        records = log_buffer.snapshot(level=level, keyword=keyword, limit=2000)
+
+    text = render_plaintext(records)
+    filename = f"chat2api-{int(time.time())}-{scope}.log"
+    return PlainTextResponse(
+        content=text,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": "text/plain; charset=utf-8",
+        },
+    )
+
+
 app.add_api_route("/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
 app.add_api_route("/admin/routing/data", routing_admin_data, methods=["GET"])
 app.add_api_route("/admin/routing/save", routing_admin_save, methods=["POST"])
@@ -530,6 +594,8 @@ app.add_api_route("/admin/routing/accounts/delete", routing_admin_delete_account
 app.add_api_route("/admin/routing/accounts/refresh", routing_admin_refresh_account, methods=["POST"])
 app.add_api_route("/admin/routing/accounts/refresh-all", routing_admin_refresh_all_accounts, methods=["POST"])
 app.add_api_route("/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])
+app.add_api_route("/admin/logs/tail", routing_admin_logs_tail, methods=["GET"])
+app.add_api_route("/admin/logs/download", routing_admin_logs_download, methods=["GET"])
 
 if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
@@ -545,3 +611,5 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/refresh", routing_admin_refresh_account, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/accounts/refresh-all", routing_admin_refresh_all_accounts, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/logs/tail", routing_admin_logs_tail, methods=["GET"])
+    app.add_api_route(f"/{api_prefix}/admin/logs/download", routing_admin_logs_download, methods=["GET"])

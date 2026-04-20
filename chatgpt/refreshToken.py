@@ -7,7 +7,11 @@ from fastapi import HTTPException
 
 from utils.Client import Client
 from utils.Logger import logger
-from utils.configs import proxy_url_list
+from utils.configs import (
+    openai_auth_client_id,
+    openai_auth_redirect_uri,
+    proxy_url_list,
+)
 from utils.routing import get_bound_proxy
 import utils.globals as globals
 
@@ -54,10 +58,10 @@ async def rt2ac(refresh_token, force_refresh=False):
 
 async def chat_refresh(refresh_token):
     data = {
-        "client_id": "pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh",
+        "client_id": openai_auth_client_id,
         "grant_type": "refresh_token",
-        "redirect_uri": "com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback",
-        "refresh_token": refresh_token
+        "redirect_uri": openai_auth_redirect_uri,
+        "refresh_token": refresh_token,
     }
     session_id = hashlib.md5(refresh_token.encode()).hexdigest()
     bound_proxy = get_bound_proxy(refresh_token)
@@ -68,19 +72,49 @@ async def chat_refresh(refresh_token):
     refresh_meta["last_proxy"] = proxy_url or ""
     globals.refresh_map[refresh_token] = refresh_meta
     client = Client(proxy=proxy_url)
+    token_prefix = refresh_token[:8]
     try:
         r = await client.post("https://auth0.openai.com/oauth/token", json=data, timeout=15)
+        raw_text = (r.text or "").strip()
+        content_type = r.headers.get("content-type", "")
+
+        # 诊断日志：每次刷新都记录上游返回的关键元数据
+        logger.info(
+            f"[chat_refresh] token={token_prefix}... status={r.status_code} "
+            f"ctype={content_type} body_len={len(raw_text)} proxy={'yes' if proxy_url else 'no'}"
+        )
+
+        # 200 路径：仍需防御解析
         if r.status_code == 200:
-            access_token = r.json()['access_token']
-            return access_token
-        else:
-            if "invalid_grant" in r.text or "access_denied" in r.text:
-                if refresh_token not in globals.error_token_list:
-                    globals.error_token_list.append(refresh_token)
-                    persist_error_tokens()
-                raise Exception(r.text)
-            else:
-                raise Exception(r.text[:300])
+            if not raw_text:
+                raise Exception("Auth0 returned empty body with status 200")
+            try:
+                payload = json.loads(raw_text)
+            except json.JSONDecodeError:
+                raise Exception(
+                    f"Auth0 non-JSON response (status 200, ctype={content_type}): "
+                    f"{raw_text[:200]}"
+                )
+            if "access_token" not in payload:
+                raise Exception(
+                    f"Auth0 JSON missing access_token: keys={list(payload.keys())} "
+                    f"body={raw_text[:200]}"
+                )
+            return payload["access_token"]
+
+        # 非 200 路径：详细分流并记录
+        error_body_hint = raw_text[:300] if raw_text else "(empty body)"
+        if "invalid_grant" in raw_text or "access_denied" in raw_text:
+            if refresh_token not in globals.error_token_list:
+                globals.error_token_list.append(refresh_token)
+                persist_error_tokens()
+            raise Exception(
+                f"Auth0 rejected refresh_token (status {r.status_code}): {error_body_hint}. "
+                f"Hint: 若 token 以 'rt_' 开头，可能需要设置 OPENAI_AUTH_CLIENT_ID 环境变量为正确的 client_id。"
+            )
+        raise Exception(
+            f"Auth0 refresh failed (status {r.status_code}, ctype={content_type}): {error_body_hint}"
+        )
     except Exception as e:
         now = int(time.time())
         refresh_meta = globals.refresh_map.get(refresh_token, {})
@@ -92,8 +126,8 @@ async def chat_refresh(refresh_token):
         })
         globals.refresh_map[refresh_token] = refresh_meta
         persist_refresh_map()
-        logger.error(f"Failed to refresh access_token `{refresh_token}`: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to refresh access_token.")
+        logger.error(f"[chat_refresh] token={token_prefix}... failed: {str(e)[:400]}")
+        raise HTTPException(status_code=500, detail=str(e)[:300])
     finally:
         await client.close()
         del client

@@ -80,6 +80,18 @@ init_group_size = int(os.getenv('INIT_GROUP_SIZE', 25))
 init_apply_on_empty = is_true(os.getenv('INIT_APPLY_ON_EMPTY', True))
 init_force = is_true(os.getenv('INIT_FORCE', False))
 
+# ========================= OpenAI Auth0 凭据刷新 =========================
+# 默认 iOS app client_id（老版 45 字符 RefreshToken 适用）
+openai_auth_client_id = os.getenv(
+    'OPENAI_AUTH_CLIENT_ID',
+    'pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh',
+)
+# 默认 iOS 回调 URI
+openai_auth_redirect_uri = os.getenv(
+    'OPENAI_AUTH_REDIRECT_URI',
+    'com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback',
+)
+
 # ========================= Antiban (风控规避层) =========================
 # 总开关；默认关闭，保持向后兼容
 enable_antiban = is_true(os.getenv('ENABLE_ANTIBAN', False))

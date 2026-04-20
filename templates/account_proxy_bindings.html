@@ -19,6 +19,8 @@
             const refreshAllAccountsApi = `${basePath}/admin/routing/accounts/refresh-all`;
             const testProxyApi = `${basePath}/admin/routing/test-proxy`;
             const parseFileApi = `${basePath}/admin/routing/accounts/parse-file`;
+            const logsTailApi = `${basePath}/admin/logs/tail`;
+            const logsDownloadApi = `${basePath}/admin/logs/download`;
 
             const summaryGrid = document.getElementById('summaryGrid');
             const ipGrid = document.getElementById('ipGrid');
@@ -66,6 +68,18 @@
             const previewPickUnknown = document.getElementById('previewPickUnknown');
             const previewTokenList = document.getElementById('previewTokenList');
             const previewWarnings = document.getElementById('previewWarnings');
+            // 系统日志 UI
+            const logsLevelSelect = document.getElementById('logsLevelSelect');
+            const logsKeywordInput = document.getElementById('logsKeywordInput');
+            const logsAutoScroll = document.getElementById('logsAutoScroll');
+            const logsAutoRefresh = document.getElementById('logsAutoRefresh');
+            const logsRefreshButton = document.getElementById('logsRefreshButton');
+            const logsClearButton = document.getElementById('logsClearButton');
+            const logsDownloadFilteredButton = document.getElementById('logsDownloadFilteredButton');
+            const logsDownloadAllButton = document.getElementById('logsDownloadAllButton');
+            const logsViewer = document.getElementById('logsViewer');
+            const logsStatus = document.getElementById('logsStatus');
+            const logsCapacityHint = document.getElementById('logsCapacityHint');
             let proxyOptions = [];
             let accountsCache = [];
             let editingToken = '';
@@ -668,6 +682,123 @@
                 }).join(' | ');
             });
 
+            // ========== 系统日志面板 ==========
+            const LOGS_POLL_INTERVAL_MS = 3000;
+            let logsLatestId = 0;
+            let logsTimer = null;
+            let logsFetching = false;
+
+            function formatLogTimestamp(ts) {
+                const d = new Date(ts * 1000);
+                const pad = (n) => String(n).padStart(2, '0');
+                return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+            }
+
+            function levelColor(level) {
+                return ({
+                    DEBUG: 'text-slate-400',
+                    INFO: 'text-slate-100',
+                    WARNING: 'text-amber-300',
+                    ERROR: 'text-red-400',
+                    CRITICAL: 'text-red-500',
+                })[level] || 'text-slate-100';
+            }
+
+            function appendLogLines(items) {
+                if (!items || !items.length) return;
+                const fragment = document.createDocumentFragment();
+                for (const item of items) {
+                    const line = document.createElement('div');
+                    line.className = levelColor(item.level);
+                    const ts = formatLogTimestamp(item.ts);
+                    line.textContent = `${ts} | ${item.level.padEnd(8)} | ${item.msg}`;
+                    fragment.appendChild(line);
+                }
+                logsViewer.appendChild(fragment);
+                while (logsViewer.childNodes.length > 5000) {
+                    logsViewer.removeChild(logsViewer.firstChild);
+                }
+                if (logsAutoScroll.checked) {
+                    logsViewer.scrollTop = logsViewer.scrollHeight;
+                }
+            }
+
+            async function fetchLogsTail(reset = false) {
+                if (logsFetching) return;
+                logsFetching = true;
+                try {
+                    const params = new URLSearchParams();
+                    if (!reset && logsLatestId > 0) params.set('since_id', String(logsLatestId));
+                    const level = logsLevelSelect.value;
+                    if (level && level !== 'ALL') params.set('level', level);
+                    const kw = logsKeywordInput.value.trim();
+                    if (kw) params.set('keyword', kw);
+                    params.set('limit', '500');
+
+                    const resp = await fetch(`${logsTailApi}?${params.toString()}`);
+                    if (!resp.ok) {
+                        logsStatus.textContent = `刷新失败：${resp.status}`;
+                        return;
+                    }
+                    const data = await resp.json();
+                    if (reset) {
+                        logsViewer.innerHTML = '';
+                        logsLatestId = 0;
+                    }
+                    if (data.items && data.items.length) {
+                        appendLogLines(data.items);
+                        logsLatestId = Math.max(logsLatestId, data.latest_id || 0);
+                    } else if (reset) {
+                        logsLatestId = data.latest_id || 0;
+                    }
+                    logsStatus.textContent =
+                        `已加载 ${logsViewer.childNodes.length} 行 · 缓冲区 ${data.total}/${data.capacity} · 最近 id=${data.latest_id} · ${new Date().toLocaleTimeString()}`;
+                    if (logsCapacityHint) {
+                        logsCapacityHint.textContent = `缓冲容量 ${data.capacity} 条。`;
+                    }
+                } catch (e) {
+                    logsStatus.textContent = `网络错误：${e.message}`;
+                } finally {
+                    logsFetching = false;
+                }
+            }
+
+            function startLogsPolling() {
+                if (logsTimer) return;
+                logsTimer = setInterval(() => {
+                    if (logsAutoRefresh.checked) fetchLogsTail(false);
+                }, LOGS_POLL_INTERVAL_MS);
+            }
+
+            logsLevelSelect.addEventListener('change', () => fetchLogsTail(true));
+            logsKeywordInput.addEventListener('input', () => {
+                clearTimeout(logsKeywordInput._debounce);
+                logsKeywordInput._debounce = setTimeout(() => fetchLogsTail(true), 400);
+            });
+            logsRefreshButton.addEventListener('click', () => fetchLogsTail(true));
+            logsClearButton.addEventListener('click', () => {
+                logsViewer.innerHTML = '';
+                logsStatus.textContent = '已清屏（仅清理当前视图，缓冲区数据仍在）';
+            });
+            logsDownloadFilteredButton.addEventListener('click', () => {
+                const params = new URLSearchParams({ scope: 'filtered' });
+                const level = logsLevelSelect.value;
+                if (level && level !== 'ALL') params.set('level', level);
+                const kw = logsKeywordInput.value.trim();
+                if (kw) params.set('keyword', kw);
+                window.location.href = `${logsDownloadApi}?${params.toString()}`;
+            });
+            logsDownloadAllButton.addEventListener('click', () => {
+                window.location.href = `${logsDownloadApi}?scope=all`;
+            });
+            logsAutoRefresh.addEventListener('change', () => {
+                logsStatus.textContent = logsAutoRefresh.checked ? '自动刷新已开启' : '已暂停自动刷新';
+            });
+
+            // 初始拉取 + 启动轮询
+            fetchLogsTail(true);
+            startLogsPolling();
+
             navLinks.forEach((link) => {
                 link.addEventListener('click', () => {
                     const targetId = link.dataset.navTarget;
@@ -712,6 +843,7 @@
                 <button type="button" data-nav-target="accounts-section" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition">账号管理 Accounts</button>
                 <button type="button" data-nav-target="proxy-section" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition">IP 管理 IP Pool</button>
                 <button type="button" data-nav-target="routing-section" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition">绑定规则 Routing</button>
+                <button type="button" data-nav-target="logs-section" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition">系统日志 Logs</button>
             </nav>
         </aside>
 
@@ -846,6 +978,39 @@
                         <tbody id="accountsTable"></tbody>
                     </table>
                 </div>
+            </section>
+
+            <section id="logs-section" data-admin-section class="bg-white rounded-3xl shadow-sm p-6">
+                <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                    <div>
+                        <h2 class="text-xl font-semibold">系统日志 Logs</h2>
+                        <p class="text-sm text-slate-500 mt-1">实时查看最近的运行日志；每 <span id="logsIntervalLabel">3</span> 秒自动刷新。<span id="logsCapacityHint" class="text-slate-400"></span></p>
+                    </div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <select id="logsLevelSelect" class="px-3 py-2 rounded-2xl border border-slate-200 text-sm">
+                            <option value="ALL">全部级别</option>
+                            <option value="DEBUG">DEBUG+</option>
+                            <option value="INFO" selected>INFO+</option>
+                            <option value="WARNING">WARNING+</option>
+                            <option value="ERROR">ERROR+</option>
+                        </select>
+                        <input id="logsKeywordInput" type="text" placeholder="关键字筛选 (如 chat_refresh)" class="px-3 py-2 rounded-2xl border border-slate-200 text-sm w-56">
+                        <label class="flex items-center gap-1 text-xs text-slate-600">
+                            <input id="logsAutoScroll" type="checkbox" checked class="accent-slate-700">
+                            自动滚底
+                        </label>
+                        <label class="flex items-center gap-1 text-xs text-slate-600">
+                            <input id="logsAutoRefresh" type="checkbox" checked class="accent-slate-700">
+                            自动刷新
+                        </label>
+                        <button id="logsRefreshButton" class="px-3 py-2 rounded-2xl bg-slate-900 text-white text-sm">手动刷新</button>
+                        <button id="logsClearButton" class="px-3 py-2 rounded-2xl bg-white border border-slate-200 text-sm">清屏</button>
+                        <button id="logsDownloadFilteredButton" class="px-3 py-2 rounded-2xl bg-blue-600 text-white text-sm">下载当前</button>
+                        <button id="logsDownloadAllButton" class="px-3 py-2 rounded-2xl bg-emerald-600 text-white text-sm">下载全部</button>
+                    </div>
+                </div>
+                <div id="logsStatus" class="text-xs text-slate-500 mb-2">--</div>
+                <pre id="logsViewer" class="bg-slate-950 text-slate-100 rounded-2xl p-4 font-mono text-xs leading-5 overflow-auto" style="max-height: 480px; white-space: pre-wrap; word-break: break-all;"></pre>
             </section>
         </main>
     </div>
