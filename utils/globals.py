@@ -17,6 +17,8 @@ CONVERSATION_MAP_FILE = os.path.join(DATA_FOLDER, "conversation_map.json")
 ANTIBAN_BUCKET_FILE = os.path.join(DATA_FOLDER, "antiban_bucket.json")
 ANTIBAN_GEO_FILE = os.path.join(DATA_FOLDER, "antiban_geo.json")
 ANTIBAN_DEAD_FILE = os.path.join(DATA_FOLDER, "antiban_dead.json")
+# Harvester 账号元数据（不含密码，仅 email+note+proxy_name+采集历史）
+HARVESTER_ACCOUNTS_FILE = os.path.join(DATA_FOLDER, "harvester_accounts.json")
 
 count = 0
 token_list = []

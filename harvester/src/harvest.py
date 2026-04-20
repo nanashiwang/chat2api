@@ -117,7 +117,14 @@ async def _run(
                 proxy_name=account.proxy_name if proxy_url else "",
                 proxy_url=proxy_url,
             )
-            logger.info(f"[{account.masked_email()}] → chat2api import OK")
+            # 额外：上报给 Harvester 看板，更新 last_rt_prefix / 状态
+            await client.report_harvest(
+                email=account.email,
+                rt_prefix=token_set.rt_prefix,
+                success=True,
+                imported_token=token_set.refresh_token,
+            )
+            logger.info(f"[{account.masked_email()}] → chat2api import OK + reported")
 
     # 串行执行（并行留作未来增强）
     results: List[HarvestResult] = []
@@ -146,6 +153,16 @@ async def _run(
         else:
             banned = any(k in (last.error or "").lower() for k in ("banned", "blocked", "suspended"))
             state.mark_failure(acc.email, last.error, banned=banned)
+            # 非 export 模式下，把失败也上报给 chat2api 看板
+            if client is not None:
+                try:
+                    await client.report_harvest(
+                        email=acc.email,
+                        success=False,
+                        error=last.error,
+                    )
+                except Exception:
+                    pass
 
     # 汇总
     ok_count = sum(1 for r in results if r.ok)

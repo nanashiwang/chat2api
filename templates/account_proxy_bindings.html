@@ -21,6 +21,9 @@
             const parseFileApi = `${basePath}/admin/routing/accounts/parse-file`;
             const logsTailApi = `${basePath}/admin/logs/tail`;
             const logsDownloadApi = `${basePath}/admin/logs/download`;
+            const harvAccountsApi = `${basePath}/admin/harvester/accounts`;
+            const harvDeleteApi = `${basePath}/admin/harvester/accounts/delete`;
+            const harvBulkApi = `${basePath}/admin/harvester/accounts/bulk-import`;
 
             const summaryGrid = document.getElementById('summaryGrid');
             const ipGrid = document.getElementById('ipGrid');
@@ -80,6 +83,26 @@
             const logsViewer = document.getElementById('logsViewer');
             const logsStatus = document.getElementById('logsStatus');
             const logsCapacityHint = document.getElementById('logsCapacityHint');
+            // Harvester UI
+            const harvAccountsTable = document.getElementById('harvAccountsTable');
+            const harvStats = document.getElementById('harvStats');
+            const harvStatusText = document.getElementById('harvStatusText');
+            const harvRefreshButton = document.getElementById('harvRefreshButton');
+            const harvAddButton = document.getElementById('harvAddButton');
+            const harvBulkImportButton = document.getElementById('harvBulkImportButton');
+            const harvCopyAllButton = document.getElementById('harvCopyAllButton');
+            const harvEditModal = document.getElementById('harvEditModal');
+            const harvEditTitle = document.getElementById('harvEditTitle');
+            const harvEditClose = document.getElementById('harvEditClose');
+            const harvEditSubmit = document.getElementById('harvEditSubmit');
+            const harvEmailInput = document.getElementById('harvEmailInput');
+            const harvNoteInput = document.getElementById('harvNoteInput');
+            const harvProxyInput = document.getElementById('harvProxyInput');
+            const harvBulkModal = document.getElementById('harvBulkModal');
+            const harvBulkClose = document.getElementById('harvBulkClose');
+            const harvBulkSubmit = document.getElementById('harvBulkSubmit');
+            const harvBulkFile = document.getElementById('harvBulkFile');
+            const harvBulkJson = document.getElementById('harvBulkJson');
             let proxyOptions = [];
             let accountsCache = [];
             let editingToken = '';
@@ -210,7 +233,7 @@
                 return proxies.length ? proxies[0].proxy_url : '';
             }
 
-            async function copyText(content) {
+            async function copyText(content, button = null) {
                 try {
                     if (navigator.clipboard && window.isSecureContext) {
                         await navigator.clipboard.writeText(content);
@@ -231,9 +254,38 @@
                             throw new Error('浏览器不支持自动复制');
                         }
                     }
-                    statusText.textContent = '测试命令已复制';
+                    if (button) {
+                        const originalText = button.dataset.originalText || button.textContent;
+                        button.dataset.originalText = originalText;
+                        button.textContent = '已复制';
+                        button.classList.add('bg-emerald-600', 'text-white', 'border-emerald-600');
+                        button.classList.remove('bg-white', 'text-slate-700');
+                        window.setTimeout(() => {
+                            button.textContent = originalText;
+                            button.classList.remove('bg-emerald-600', 'text-white', 'border-emerald-600');
+                            button.classList.add('bg-white', 'text-slate-700');
+                        }, 1600);
+                    }
+                    const copyToast = document.getElementById('copyToast');
+                    if (copyToast) {
+                        copyToast.textContent = '测试命令已复制到剪贴板';
+                        copyToast.classList.remove('hidden');
+                        window.clearTimeout(copyToast._timer);
+                        copyToast._timer = window.setTimeout(() => {
+                            copyToast.classList.add('hidden');
+                        }, 1800);
+                    }
                 } catch (error) {
-                    statusText.textContent = `复制失败: ${error.message}`;
+                    const fallback = window.prompt('自动复制失败，请手动复制下面内容：', content);
+                    const copyToast = document.getElementById('copyToast');
+                    if (copyToast) {
+                        copyToast.textContent = fallback === null ? `复制失败: ${error.message}` : '已弹出手动复制窗口';
+                        copyToast.classList.remove('hidden');
+                        window.clearTimeout(copyToast._timer);
+                        copyToast._timer = window.setTimeout(() => {
+                            copyToast.classList.add('hidden');
+                        }, 2400);
+                    }
                 }
             }
 
@@ -653,11 +705,11 @@
             });
 
             copyModelsButton.addEventListener('click', async () => {
-                await copyText(modelsTestCommand.textContent);
+                await copyText(modelsTestCommand.textContent, copyModelsButton);
             });
 
             copyChatButton.addEventListener('click', async () => {
-                await copyText(apiTestCommand.textContent);
+                await copyText(apiTestCommand.textContent, copyChatButton);
             });
 
             testProxyButton.addEventListener('click', async () => {
@@ -798,6 +850,227 @@
                 logsStatus.textContent = logsAutoRefresh.checked ? '自动刷新已开启' : '已暂停自动刷新';
             });
 
+            // ========== Harvester 看板 ==========
+            let harvAccountsCache = [];
+            let harvEditingEmail = '';
+
+            function harvStatusChip(status) {
+                const map = {
+                    fresh:   ['bg-emerald-100 text-emerald-700', '新鲜'],
+                    stale:   ['bg-amber-100 text-amber-700',     '即将过期'],
+                    failed:  ['bg-red-100 text-red-700',         '失败/过期'],
+                    pending: ['bg-slate-100 text-slate-700',     '待采集'],
+                };
+                const [cls, label] = map[status] || ['bg-slate-100 text-slate-700', status];
+                return `<span class="px-2 py-1 rounded-full text-xs ${cls}">${label}</span>`;
+            }
+
+            function harvFormatTs(ts) {
+                if (!ts) return '—';
+                const d = new Date(ts * 1000);
+                const pad = (n) => String(n).padStart(2, '0');
+                return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+            }
+
+            function harvBuildCmd(email) {
+                // 一行命令，假设用户已 cd 到 harvester 并 source .venv
+                // 兼容：给出进入目录 + 激活 + 运行的完整三段
+                const target = email ? `--only ${email}` : '';
+                return `cd /Users/nanashiwang/Documents/Projects/chat2api/harvester && source .venv/bin/activate && python -m src.harvest ${target}`.trim();
+            }
+
+            async function harvCopyCmd(email) {
+                const cmd = harvBuildCmd(email);
+                try {
+                    await navigator.clipboard.writeText(cmd);
+                    harvStatusText.textContent = `已复制命令 → ${email || '全部'}`;
+                } catch (e) {
+                    prompt('复制失败，请手工复制：', cmd);
+                }
+            }
+
+            function harvRenderStats(stats) {
+                const cards = [
+                    ['总数', stats.total || 0, 'text-slate-900'],
+                    ['新鲜', stats.fresh || 0, 'text-emerald-600'],
+                    ['即将过期', stats.stale || 0, 'text-amber-600'],
+                    ['失败/过期', stats.failed || 0, 'text-red-600'],
+                    ['待采集', stats.pending || 0, 'text-slate-500'],
+                ];
+                harvStats.innerHTML = cards.map(([l, v, c]) => `
+                    <div class="bg-slate-50 rounded-2xl p-3 text-center">
+                        <div class="text-2xl font-bold ${c}">${v}</div>
+                        <div class="text-xs text-slate-500">${l}</div>
+                    </div>
+                `).join('');
+            }
+
+            function harvRenderTable(accounts) {
+                if (!accounts.length) {
+                    harvAccountsTable.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-slate-400">暂无账号，点"新增账号"或"批量导入"</td></tr>`;
+                    return;
+                }
+                harvAccountsTable.innerHTML = accounts.map((a) => `
+                    <tr class="border-b border-slate-100 hover:bg-slate-50">
+                        <td class="py-2 pr-3 font-mono text-xs">${escapeHtml(a.email)}</td>
+                        <td class="py-2 pr-3">${escapeHtml(a.note || '-')}</td>
+                        <td class="py-2 pr-3">${escapeHtml(a.proxy_name || '-')}</td>
+                        <td class="py-2 pr-3 font-mono text-xs">${a.last_rt_prefix ? escapeHtml(a.last_rt_prefix) + '...' : '—'}</td>
+                        <td class="py-2 pr-3 text-xs">${harvFormatTs(a.last_harvest_at)}</td>
+                        <td class="py-2 pr-3">${harvStatusChip(a.status)}</td>
+                        <td class="py-2 pr-3 whitespace-nowrap">
+                            <button data-harv-cmd="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-xs">复制命令</button>
+                            <button data-harv-edit="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-slate-200 text-xs ml-1">编辑</button>
+                            <button data-harv-del="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-red-100 text-red-700 text-xs ml-1">删除</button>
+                        </td>
+                    </tr>
+                `).join('');
+            }
+
+            async function harvLoad() {
+                try {
+                    const resp = await fetch(harvAccountsApi);
+                    if (!resp.ok) {
+                        harvStatusText.textContent = `加载失败：${resp.status}`;
+                        return;
+                    }
+                    const data = await resp.json();
+                    harvAccountsCache = data.accounts || [];
+                    harvRenderStats(data.stats || {});
+                    harvRenderTable(harvAccountsCache);
+                    harvStatusText.textContent = `已加载 ${harvAccountsCache.length} 个账号 · ${new Date().toLocaleTimeString()}`;
+                } catch (e) {
+                    harvStatusText.textContent = `网络错误：${e.message}`;
+                }
+            }
+
+            function harvOpenEdit(email) {
+                const acc = harvAccountsCache.find((x) => x.email.toLowerCase() === (email || '').toLowerCase());
+                harvEditingEmail = email || '';
+                harvEditTitle.textContent = email ? '编辑账号' : '新增账号';
+                harvEmailInput.value = acc ? acc.email : '';
+                harvEmailInput.readOnly = Boolean(email);
+                harvNoteInput.value = acc ? (acc.note || '') : '';
+                harvProxyInput.value = acc ? (acc.proxy_name || '') : '';
+                harvEditModal.classList.remove('hidden');
+                harvEditModal.classList.add('flex');
+            }
+
+            function harvCloseEdit() {
+                harvEditingEmail = '';
+                harvEditModal.classList.add('hidden');
+                harvEditModal.classList.remove('flex');
+            }
+
+            async function harvSaveEdit() {
+                const email = harvEmailInput.value.trim();
+                if (!email || !email.includes('@')) {
+                    alert('请输入合法的 email');
+                    return;
+                }
+                const payload = {
+                    email,
+                    note: harvNoteInput.value.trim(),
+                    proxy_name: harvProxyInput.value.trim(),
+                };
+                const resp = await fetch(harvAccountsApi, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    alert(data.detail || '保存失败');
+                    return;
+                }
+                harvCloseEdit();
+                await harvLoad();
+            }
+
+            async function harvDelete(email) {
+                if (!confirm(`确认删除 ${email} 的 Harvester 记录？\n（只删元数据，不动已导入的 token）`)) return;
+                const resp = await fetch(harvDeleteApi, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({email}),
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    alert(data.detail || '删除失败');
+                    return;
+                }
+                await harvLoad();
+            }
+
+            async function harvBulkSubmitHandler() {
+                let body;
+                let headers = {};
+                if (harvBulkFile.files && harvBulkFile.files[0]) {
+                    const fd = new FormData();
+                    fd.append('file', harvBulkFile.files[0]);
+                    body = fd;
+                } else {
+                    const text = harvBulkJson.value.trim();
+                    if (!text) {
+                        alert('请上传 CSV 文件或粘贴 JSON');
+                        return;
+                    }
+                    let rows;
+                    try {
+                        rows = JSON.parse(text);
+                        if (!Array.isArray(rows)) throw new Error('需要数组');
+                    } catch (e) {
+                        alert('JSON 无效：' + e.message);
+                        return;
+                    }
+                    body = JSON.stringify({rows});
+                    headers = {'Content-Type': 'application/json'};
+                }
+                const resp = await fetch(harvBulkApi, {method: 'POST', headers, body});
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    alert(data.detail || '导入失败');
+                    return;
+                }
+                alert(`导入完成：新增 ${data.added}，更新 ${data.updated}，总计 ${data.total}`);
+                harvBulkModal.classList.add('hidden');
+                harvBulkModal.classList.remove('flex');
+                harvBulkFile.value = '';
+                harvBulkJson.value = '';
+                await harvLoad();
+            }
+
+            // 事件绑定
+            harvRefreshButton.addEventListener('click', harvLoad);
+            harvAddButton.addEventListener('click', () => harvOpenEdit(''));
+            harvEditClose.addEventListener('click', harvCloseEdit);
+            harvEditSubmit.addEventListener('click', harvSaveEdit);
+            harvCopyAllButton.addEventListener('click', () => harvCopyCmd(''));
+            harvBulkImportButton.addEventListener('click', () => {
+                harvBulkModal.classList.remove('hidden');
+                harvBulkModal.classList.add('flex');
+            });
+            harvBulkClose.addEventListener('click', () => {
+                harvBulkModal.classList.add('hidden');
+                harvBulkModal.classList.remove('flex');
+            });
+            harvBulkSubmit.addEventListener('click', harvBulkSubmitHandler);
+
+            // 表格行操作委托
+            harvAccountsTable.addEventListener('click', (e) => {
+                const target = e.target;
+                if (!(target instanceof HTMLElement)) return;
+                const cmdEmail = target.getAttribute('data-harv-cmd');
+                const editEmail = target.getAttribute('data-harv-edit');
+                const delEmail = target.getAttribute('data-harv-del');
+                if (cmdEmail) return harvCopyCmd(cmdEmail);
+                if (editEmail) return harvOpenEdit(editEmail);
+                if (delEmail) return harvDelete(delEmail);
+            });
+
+            // 初始加载
+            harvLoad();
+
             // 初始拉取 + 启动轮询
             fetchLogsTail(true);
             startLogsPolling();
@@ -868,6 +1141,7 @@
                 <button type="button" data-page-target="overview-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-800 transition">控制台总览</button>
                 <button type="button" data-page-target="accounts-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">账号与令牌</button>
                 <button type="button" data-page-target="routing-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">代理与路由</button>
+                <button type="button" data-page-target="harvester-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">账号采集 Harvester</button>
                 <button type="button" data-page-target="logs-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">运行日志</button>
             </nav>
         </aside>
@@ -911,19 +1185,20 @@
                         <h2 class="text-xl font-semibold">接口测试样例</h2>
                         <p class="text-sm text-slate-500 mt-1">一键复制模型探测和聊天测试命令，方便你本地或服务器直接验证。</p>
                     </div>
+                    <div id="copyToast" class="hidden text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-2xl px-3 py-2">测试命令已复制到剪贴板</div>
                 </div>
                 <div class="grid lg:grid-cols-2 gap-6">
                     <div class="rounded-2xl border border-slate-200 p-4 bg-slate-50">
                         <div class="flex items-center justify-between mb-3">
                             <div class="font-medium">模型列表测试</div>
-                            <button id="copyModelsButton" class="px-3 py-2 rounded-xl bg-white border border-slate-200 text-sm">复制</button>
+                            <button id="copyModelsButton" class="px-3 py-2 rounded-xl bg-white border border-slate-200 text-sm text-slate-700 hover:bg-slate-100 active:scale-[0.98] transition">复制</button>
                         </div>
                         <pre id="modelsTestCommand" class="text-xs leading-6 whitespace-pre-wrap break-all text-slate-700"></pre>
                     </div>
                     <div class="rounded-2xl border border-slate-200 p-4 bg-slate-50">
                         <div class="flex items-center justify-between mb-3">
                             <div class="font-medium">聊天接口测试</div>
-                            <button id="copyChatButton" class="px-3 py-2 rounded-xl bg-white border border-slate-200 text-sm">复制</button>
+                            <button id="copyChatButton" class="px-3 py-2 rounded-xl bg-white border border-slate-200 text-sm text-slate-700 hover:bg-slate-100 active:scale-[0.98] transition">复制</button>
                         </div>
                         <pre id="apiTestCommand" class="text-xs leading-6 whitespace-pre-wrap break-all text-slate-700"></pre>
                     </div>
@@ -1029,6 +1304,44 @@
                     </table>
                 </div>
             </section>
+            </div>
+
+            <div id="harvester-page" data-admin-page class="hidden space-y-8">
+                <section class="bg-white rounded-3xl shadow-sm p-6">
+                    <div class="flex items-start justify-between mb-4 flex-wrap gap-3">
+                        <div>
+                            <h2 class="text-xl font-semibold">账号采集 Harvester</h2>
+                            <p class="text-sm text-slate-500 mt-1">
+                                管理 email 清单（服务器端不存密码），每 60-90 天在本地 Mac 跑一次 Harvester 补齐 RefreshToken。
+                                点"复制命令"到本地 Terminal 粘贴执行即可。
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <button id="harvAddButton" class="px-3 py-2 rounded-2xl bg-slate-900 text-white text-sm">新增账号</button>
+                            <button id="harvBulkImportButton" class="px-3 py-2 rounded-2xl bg-white border border-slate-200 text-sm">批量导入</button>
+                            <button id="harvCopyAllButton" class="px-3 py-2 rounded-2xl bg-emerald-600 text-white text-sm">复制全量命令</button>
+                            <button id="harvRefreshButton" class="px-3 py-2 rounded-2xl bg-slate-100 text-sm">刷新</button>
+                        </div>
+                    </div>
+                    <div id="harvStats" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4"></div>
+                    <div id="harvStatusText" class="text-xs text-slate-500 mb-2">--</div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="text-left border-b border-slate-200">
+                                    <th class="py-3">Email</th>
+                                    <th class="py-3">备注</th>
+                                    <th class="py-3">代理</th>
+                                    <th class="py-3">最近 rt</th>
+                                    <th class="py-3">上次采集</th>
+                                    <th class="py-3">状态</th>
+                                    <th class="py-3">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="harvAccountsTable"></tbody>
+                        </table>
+                    </div>
+                </section>
             </div>
 
             <div id="logs-page" data-admin-page class="hidden space-y-8">
@@ -1160,6 +1473,64 @@
             </div>
             <div class="flex justify-end gap-3 mt-4">
                 <button id="importSubmitButton" class="px-5 py-3 rounded-2xl bg-slate-900 text-white">保存账号</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Harvester 账号新增/编辑弹窗 -->
+    <div id="harvEditModal" class="fixed inset-0 bg-slate-900/50 hidden items-center justify-center p-6">
+        <div class="w-full max-w-md bg-white rounded-3xl shadow-xl p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="harvEditTitle" class="text-xl font-semibold">新增账号</h3>
+                <button id="harvEditClose" class="px-3 py-2 rounded-xl bg-slate-100 text-sm">关闭</button>
+            </div>
+            <p class="text-xs text-slate-500 mb-4">
+                ⚠️ 服务器端<b>不存储密码</b>。密码请在本地 <code>harvester/accounts.csv</code> 单独维护。
+                本页面只负责同步 email 清单到"要跑 Harvester 的账号列表"。
+            </p>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-sm text-slate-500 mb-1">Email</label>
+                    <input id="harvEmailInput" class="w-full px-3 py-2 rounded-xl border border-slate-200" placeholder="alice@example.com">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate-500 mb-1">备注</label>
+                    <input id="harvNoteInput" class="w-full px-3 py-2 rounded-xl border border-slate-200" placeholder="Team-01 HK">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate-500 mb-1">代理名（可选，需是已配置的代理名）</label>
+                    <input id="harvProxyInput" class="w-full px-3 py-2 rounded-xl border border-slate-200" placeholder="HK-Resi-01">
+                </div>
+            </div>
+            <div class="flex justify-end gap-3 mt-4">
+                <button id="harvEditSubmit" class="px-5 py-3 rounded-2xl bg-slate-900 text-white">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Harvester 批量导入弹窗 -->
+    <div id="harvBulkModal" class="fixed inset-0 bg-slate-900/50 hidden items-center justify-center p-6">
+        <div class="w-full max-w-2xl bg-white rounded-3xl shadow-xl p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-xl font-semibold">批量导入账号清单</h3>
+                <button id="harvBulkClose" class="px-3 py-2 rounded-xl bg-slate-100 text-sm">关闭</button>
+            </div>
+            <p class="text-xs text-slate-500 mb-4">
+                上传 CSV（表头 <code>email,note,proxy_name</code>），或粘贴 JSON 数组。仅接受元数据，不含密码。
+            </p>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-sm text-slate-500 mb-1">上传 CSV</label>
+                    <input id="harvBulkFile" type="file" accept=".csv" class="block text-sm">
+                </div>
+                <div class="text-center text-slate-400 text-xs">—— 或 ——</div>
+                <div>
+                    <label class="block text-sm text-slate-500 mb-1">粘贴 JSON</label>
+                    <textarea id="harvBulkJson" class="w-full min-h-40 p-3 rounded-xl border border-slate-200 font-mono text-xs" placeholder='[{"email":"a@b.com","note":"Team-01","proxy_name":"HK-Resi-01"}]'></textarea>
+                </div>
+            </div>
+            <div class="flex justify-end gap-3 mt-4">
+                <button id="harvBulkSubmit" class="px-5 py-3 rounded-2xl bg-slate-900 text-white">导入</button>
             </div>
         </div>
     </div>

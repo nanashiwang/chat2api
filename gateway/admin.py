@@ -581,6 +581,123 @@ async def routing_admin_logs_download(request: Request):
     )
 
 
+# ============ Harvester 账号元数据 ============
+
+async def routing_admin_harvester_list(request: Request):
+    """返回所有 Harvester 账号元数据及统计。"""
+    require_admin_auth(request)
+    from utils import harvester_meta
+    return JSONResponse({
+        "accounts": harvester_meta.list_all(),
+        "stats": harvester_meta.stats(),
+    })
+
+
+async def routing_admin_harvester_upsert(request: Request):
+    """新增或编辑账号元数据（不含密码）。"""
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    email = (body.get("email") or "").strip()
+    note = (body.get("note") or "").strip()
+    proxy_name = (body.get("proxy_name") or "").strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="email 不合法")
+
+    from utils import harvester_meta
+    try:
+        rec = harvester_meta.upsert(email, note=note, proxy_name=proxy_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse({"status": "success", "account": rec})
+
+
+async def routing_admin_harvester_delete(request: Request):
+    """删除元数据（不动 token.txt）。"""
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    email = (body.get("email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="email 不能为空")
+    from utils import harvester_meta
+    ok = harvester_meta.delete(email)
+    return JSONResponse({"status": "success" if ok else "not_found"})
+
+
+async def routing_admin_harvester_bulk_import(request: Request):
+    """批量导入 email 清单。接受两种输入：
+       1) JSON: {"rows": [{"email":"...","note":"...","proxy_name":"..."}]}
+       2) multipart: file= CSV 文件（表头 email,note,proxy_name）
+    """
+    require_admin_auth(request)
+    rows = []
+    content_type = request.headers.get("content-type", "")
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        file = form.get("file")
+        if file is None:
+            raise HTTPException(status_code=400, detail="缺少 file 字段")
+        raw = (await file.read()).decode("utf-8", errors="replace")
+        import csv
+        import io
+        reader = csv.DictReader(io.StringIO(raw))
+        for r in reader:
+            rows.append({
+                "email": (r.get("email") or "").strip(),
+                "note": (r.get("note") or "").strip(),
+                "proxy_name": (r.get("proxy_name") or "").strip(),
+            })
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="需要 JSON 或 CSV 文件")
+        rows = body.get("rows") or []
+        if not isinstance(rows, list):
+            raise HTTPException(status_code=400, detail="rows 必须是数组")
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="没有可导入的行")
+
+    from utils import harvester_meta
+    result = harvester_meta.bulk_upsert(rows)
+    return JSONResponse({"status": "success", **result, "total": len(rows)})
+
+
+async def routing_admin_harvester_report(request: Request):
+    """Harvester 采集成功/失败后回调此接口上报状态。"""
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    email = (body.get("email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="email 不能为空")
+    success = bool(body.get("success", True))
+    rt_prefix = (body.get("rt_prefix") or "").strip()
+    error = (body.get("error") or "").strip()
+    imported_token = (body.get("imported_token") or "").strip()
+
+    from utils import harvester_meta
+    rec = harvester_meta.report_harvest(
+        email=email,
+        rt_prefix=rt_prefix,
+        success=success,
+        error=error,
+        imported_token=imported_token,
+    )
+    return JSONResponse({"status": "success", "account": rec})
+
+
 app.add_api_route("/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
 app.add_api_route("/admin/routing/data", routing_admin_data, methods=["GET"])
 app.add_api_route("/admin/routing/save", routing_admin_save, methods=["POST"])
@@ -596,6 +713,11 @@ app.add_api_route("/admin/routing/accounts/refresh-all", routing_admin_refresh_a
 app.add_api_route("/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])
 app.add_api_route("/admin/logs/tail", routing_admin_logs_tail, methods=["GET"])
 app.add_api_route("/admin/logs/download", routing_admin_logs_download, methods=["GET"])
+app.add_api_route("/admin/harvester/accounts", routing_admin_harvester_list, methods=["GET"])
+app.add_api_route("/admin/harvester/accounts", routing_admin_harvester_upsert, methods=["POST"])
+app.add_api_route("/admin/harvester/accounts/delete", routing_admin_harvester_delete, methods=["POST"])
+app.add_api_route("/admin/harvester/accounts/bulk-import", routing_admin_harvester_bulk_import, methods=["POST"])
+app.add_api_route("/admin/harvester/report", routing_admin_harvester_report, methods=["POST"])
 
 if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
@@ -613,3 +735,8 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing/test-proxy", routing_admin_test_proxy, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/logs/tail", routing_admin_logs_tail, methods=["GET"])
     app.add_api_route(f"/{api_prefix}/admin/logs/download", routing_admin_logs_download, methods=["GET"])
+    app.add_api_route(f"/{api_prefix}/admin/harvester/accounts", routing_admin_harvester_list, methods=["GET"])
+    app.add_api_route(f"/{api_prefix}/admin/harvester/accounts", routing_admin_harvester_upsert, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/harvester/accounts/delete", routing_admin_harvester_delete, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/harvester/accounts/bulk-import", routing_admin_harvester_bulk_import, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/harvester/report", routing_admin_harvester_report, methods=["POST"])

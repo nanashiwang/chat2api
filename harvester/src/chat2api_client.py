@@ -95,3 +95,40 @@ class Chat2ApiClient:
             raise RuntimeError("chat2api 后台未开启（未配置 ADMIN_PASSWORD）")
         r.raise_for_status()
         return r.json()
+
+    async def report_harvest(
+        self,
+        email: str,
+        rt_prefix: str = "",
+        success: bool = True,
+        error: str = "",
+        imported_token: str = "",
+    ) -> None:
+        """把采集结果上报给 chat2api，更新 Harvester 看板的 last_rt_prefix / 状态。
+
+        失败不抛异常，避免因元数据回传问题污染主流程。
+        """
+        url = self._url("/admin/harvester/report")
+        payload = {
+            "email": email,
+            "success": success,
+            "rt_prefix": rt_prefix,
+            "error": error,
+            "imported_token": imported_token,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.post(
+                    url,
+                    json=payload,
+                    headers={
+                        "Cookie": self._cookie_header,
+                        "Content-Type": "application/json",
+                    },
+                )
+            if r.status_code != 200:
+                logger.warning(
+                    f"report_harvest 返回 {r.status_code}: {r.text[:200]}"
+                )
+        except Exception as e:
+            logger.warning(f"report_harvest 失败（忽略）: {e}")
