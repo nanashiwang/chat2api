@@ -816,36 +816,142 @@ async def routing_admin_harvester_authorize_exchange(request: Request):
     })
 
 
+async def routing_admin_harvester_import_cookie(request: Request):
+    """从浏览器粘贴的 __Secure-next-auth.session-token cookie 导入账号。
+
+    前端传递 {email, session_token, note?, proxy_name?}。
+    后端会：
+      1. 加 'sess-' 前缀存到 token.txt
+      2. 立即调 sess2ac 验证 cookie 有效性
+      3. 通过已有 update_account_meta 绑定代理/备注
+      4. 通过 harvester_meta.report_harvest 更新看板
+    """
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    email = (body.get("email") or "").strip()
+    session_token = (body.get("session_token") or "").strip()
+    note = (body.get("note") or "").strip()
+    proxy_name = (body.get("proxy_name") or "").strip()
+
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="email 不合法")
+    if not session_token:
+        raise HTTPException(status_code=400, detail="session_token 不能为空")
+    # 基础校验：cookie 通常是 base64url，极短不像真 token
+    if len(session_token) < 20:
+        raise HTTPException(status_code=400, detail="session_token 过短，不像有效 cookie")
+    # 去掉用户可能多复制的 cookie 名前缀
+    for prefix in (
+        "__Secure-next-auth.session-token=",
+        "__Host-next-auth.session-token=",
+        "next-auth.session-token=",
+    ):
+        if session_token.startswith(prefix):
+            session_token = session_token[len(prefix):]
+
+    storage_key = "sess-" + session_token
+
+    # 先验证 cookie 是否真能换出 access_token（短路失败）
+    from chatgpt.refreshToken import sess2ac
+    from utils import harvester_meta
+    from utils.routing import get_routing_config, update_account_meta
+
+    try:
+        access_token = await sess2ac(storage_key, force_refresh=True)
+    except Exception as e:
+        harvester_meta.report_harvest(
+            email=email, success=False, error=f"cookie 验证失败: {e}"
+        )
+        raise HTTPException(status_code=400, detail=f"Cookie 验证失败：{str(e)[:200]}")
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Cookie 有效但未拿到 access_token")
+
+    # 写入 token 池
+    if storage_key not in globals.token_list:
+        globals.token_list.append(storage_key)
+        with open(globals.TOKENS_FILE, "a", encoding="utf-8") as f:
+            f.write(storage_key + "\n")
+
+    # 绑定代理 / 备注
+    proxy_url = ""
+    if proxy_name:
+        cfg = get_routing_config()
+        match = next(
+            (p for p in cfg.get("proxies", []) if p.get("name") == proxy_name),
+            None,
+        )
+        if match:
+            proxy_url = match.get("proxy_url", "") or ""
+        else:
+            logger.warning(
+                f"[harvester-cookie] proxy_name='{proxy_name}' 未找到"
+            )
+    final_note = email + (f" · {note}" if note else "")
+    update_account_meta(
+        storage_key,
+        note=final_note,
+        group_name=None,
+        proxy_name=proxy_name if proxy_url else None,
+        proxy_url=proxy_url if proxy_url else None,
+    )
+
+    # 更新看板
+    harvester_meta.report_harvest(
+        email=email,
+        rt_prefix=storage_key[:14],
+        success=True,
+        imported_token=storage_key,
+    )
+
+    logger.info(f"[harvester-cookie] ✓ {email} → access_token 已成功换出")
+    return JSONResponse({
+        "status": "success",
+        "email": email,
+        "token_type": "SessionToken",
+        "access_token_preview": access_token[:16] + "...",
+    })
+
+
 async def _exchange_code_for_tokens(code: str, sess) -> dict:
-    """调用 Auth0 /oauth/token 换 refresh_token。"""
+    """调用 OpenAI /oauth/token 换 refresh_token。
+
+    使用 Codex CLI 风格：application/x-www-form-urlencoded。
+    端点从 oauth_session._get_oauth_config() 取（auth.openai.com/oauth/token）。
+    """
+    from urllib.parse import urlencode
     from utils.Client import Client
     from utils import oauth_session as _oauth
 
-    client_id, redirect_uri, _audience, _scope = _oauth._get_oauth_config()
-    data = {
+    client_id, redirect_uri, _audience, _scope, _auth_url, token_url = _oauth._get_oauth_config()
+    form = urlencode({
         "grant_type": "authorization_code",
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "code": code,
         "code_verifier": sess.verifier,
-    }
+    })
     headers = {
         "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "ChatGPT/1.2025.084 (iOS 17.5.1; iPhone15,3; build 1402)",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Codex_CLI/0.1.0",
     }
 
-    # 复用现有 Client；关闭 impersonate 避免被 WAF 当浏览器（见 refreshToken.py 同样处理）
     c = Client(impersonate=None)
     try:
-        r = await c.post(_oauth.TOKEN_ENDPOINT, json=data, headers=headers, timeout=20)
+        # curl_cffi 的 post 接受 data= 作为 form body
+        r = await c.post(token_url, data=form, headers=headers, timeout=20)
         raw = (r.text or "").strip()
         if r.status_code != 200:
-            raise RuntimeError(f"Auth0 status={r.status_code} body={raw[:300]}")
+            raise RuntimeError(f"OpenAI token status={r.status_code} body={raw[:300]}")
         import json as _json
         payload = _json.loads(raw)
         if "refresh_token" not in payload:
-            raise RuntimeError(f"Auth0 缺 refresh_token: keys={list(payload.keys())}")
+            raise RuntimeError(f"响应缺 refresh_token: keys={list(payload.keys())}")
         return payload
     finally:
         await c.close()
@@ -910,6 +1016,7 @@ app.add_api_route("/admin/harvester/accounts/bulk-import", routing_admin_harvest
 app.add_api_route("/admin/harvester/report", routing_admin_harvester_report, methods=["POST"])
 app.add_api_route("/admin/harvester/authorize/start", routing_admin_harvester_authorize_start, methods=["POST"])
 app.add_api_route("/admin/harvester/authorize/exchange", routing_admin_harvester_authorize_exchange, methods=["POST"])
+app.add_api_route("/admin/harvester/import-cookie", routing_admin_harvester_import_cookie, methods=["POST"])
 
 if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
@@ -934,3 +1041,4 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/harvester/report", routing_admin_harvester_report, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/harvester/authorize/start", routing_admin_harvester_authorize_start, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/harvester/authorize/exchange", routing_admin_harvester_authorize_exchange, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/harvester/import-cookie", routing_admin_harvester_import_cookie, methods=["POST"])

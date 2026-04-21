@@ -26,6 +26,7 @@
             const harvBulkApi = `${basePath}/admin/harvester/accounts/bulk-import`;
             const harvAuthStartApi = `${basePath}/admin/harvester/authorize/start`;
             const harvAuthExchangeApi = `${basePath}/admin/harvester/authorize/exchange`;
+            const harvImportCookieApi = `${basePath}/admin/harvester/import-cookie`;
 
             const summaryGrid = document.getElementById('summaryGrid');
             const ipGrid = document.getElementById('ipGrid');
@@ -115,6 +116,15 @@
             const harvAuthSubmitButton = document.getElementById('harvAuthSubmitButton');
             const harvAuthSessionInfo = document.getElementById('harvAuthSessionInfo');
             const harvAuthErrorBox = document.getElementById('harvAuthErrorBox');
+            // Cookie 导入弹窗（主流程）
+            const harvCookieModal = document.getElementById('harvCookieModal');
+            const harvCookieTitle = document.getElementById('harvCookieTitle');
+            const harvCookieClose = document.getElementById('harvCookieClose');
+            const harvCookieCancel = document.getElementById('harvCookieCancel');
+            const harvCookieInput = document.getElementById('harvCookieInput');
+            const harvCookieInfo = document.getElementById('harvCookieInfo');
+            const harvCookieErrorBox = document.getElementById('harvCookieErrorBox');
+            const harvCookieSubmit = document.getElementById('harvCookieSubmit');
             let proxyOptions = [];
             let accountsCache = [];
             let editingToken = '';
@@ -1016,7 +1026,7 @@
                         <td class="py-2 pr-3 text-xs">${harvFormatTs(a.last_harvest_at)}</td>
                         <td class="py-2 pr-3">${harvStatusChip(a.status)}</td>
                         <td class="py-2 pr-3 whitespace-nowrap">
-                            <button data-harv-auth="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-xs">🌐 浏览器登录</button>
+                            <button data-harv-cookie="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-xs">🍪 粘贴 Cookie</button>
                             <button data-harv-edit="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-slate-200 text-xs ml-1">编辑</button>
                             <button data-harv-del="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-red-100 text-red-700 text-xs ml-1">删除</button>
                         </td>
@@ -1152,19 +1162,95 @@
             });
             harvBulkSubmit.addEventListener('click', harvBulkSubmitHandler);
 
-            // 授权弹窗
+            // ===== Cookie 粘贴流程（主流程）=====
+            let harvCookieCurrent = null;  // {email}
+
+            function harvOpenCookie(email) {
+                const acc = harvAccountsCache.find((x) => x.email.toLowerCase() === email.toLowerCase());
+                if (!acc) {
+                    alert('账号不存在，请先"新增账号"');
+                    return;
+                }
+                harvCookieCurrent = {email: acc.email, note: acc.note || '', proxy_name: acc.proxy_name || ''};
+                harvCookieTitle.textContent = `🍪 粘贴 ChatGPT Session Cookie - ${acc.email}`;
+                harvCookieInput.value = '';
+                harvCookieInfo.textContent = '提示：cookie 值通常 500+ 字符，长段 base64；只复制 Value 列，不要带 name=';
+                harvCookieErrorBox.classList.add('hidden');
+                harvCookieModal.classList.remove('hidden');
+                harvCookieModal.classList.add('flex');
+                setTimeout(() => harvCookieInput.focus(), 50);
+            }
+
+            function harvCloseCookie() {
+                harvCookieCurrent = null;
+                harvCookieInput.value = '';
+                harvCookieModal.classList.add('hidden');
+                harvCookieModal.classList.remove('flex');
+            }
+
+            async function harvSubmitCookie() {
+                if (!harvCookieCurrent) return;
+                const val = harvCookieInput.value.trim();
+                if (!val) {
+                    alert('请粘贴 cookie 值');
+                    return;
+                }
+                if (val.length < 20) {
+                    alert('cookie 看起来过短，请确认复制的是完整 Value');
+                    return;
+                }
+                harvCookieSubmit.disabled = true;
+                harvCookieSubmit.textContent = '验证中...';
+                harvCookieErrorBox.classList.add('hidden');
+                try {
+                    const resp = await fetch(harvImportCookieApi, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            email: harvCookieCurrent.email,
+                            session_token: val,
+                            note: harvCookieCurrent.note,
+                            proxy_name: harvCookieCurrent.proxy_name,
+                        }),
+                    });
+                    const data = await resp.json();
+                    if (!resp.ok) {
+                        harvCookieErrorBox.textContent = data.detail || '导入失败';
+                        harvCookieErrorBox.classList.remove('hidden');
+                        return;
+                    }
+                    alert(`✅ 成功导入 ${data.email}\naccess_token 预览: ${data.access_token_preview || ''}`);
+                    harvCloseCookie();
+                    await harvLoad();
+                } catch (e) {
+                    harvCookieErrorBox.textContent = '网络错误：' + e.message;
+                    harvCookieErrorBox.classList.remove('hidden');
+                } finally {
+                    harvCookieSubmit.disabled = false;
+                    harvCookieSubmit.textContent = '验证并导入';
+                }
+            }
+
+            // 授权弹窗（OAuth 路线，保留但不是主推）
             harvAuthCopyUrlButton.addEventListener('click', harvCopyAuthUrl);
             harvAuthClose.addEventListener('click', harvCloseAuth);
             harvAuthCancel.addEventListener('click', harvCloseAuth);
             harvAuthSubmitButton.addEventListener('click', harvSubmitCallback);
 
+            // Cookie 弹窗事件
+            harvCookieClose.addEventListener('click', harvCloseCookie);
+            harvCookieCancel.addEventListener('click', harvCloseCookie);
+            harvCookieSubmit.addEventListener('click', harvSubmitCookie);
+
             // 表格行操作委托
             harvAccountsTable.addEventListener('click', (e) => {
                 const target = e.target;
                 if (!(target instanceof HTMLElement)) return;
+                const cookieEmail = target.getAttribute('data-harv-cookie');
                 const authEmail = target.getAttribute('data-harv-auth');
                 const editEmail = target.getAttribute('data-harv-edit');
                 const delEmail = target.getAttribute('data-harv-del');
+                if (cookieEmail) return harvOpenCookie(cookieEmail);
                 if (authEmail) return harvStartAuth(authEmail);
                 if (editEmail) return harvOpenEdit(editEmail);
                 if (delEmail) return harvDelete(delEmail);
@@ -1414,8 +1500,8 @@
                         <div>
                             <h2 class="text-xl font-semibold">账号采集 Harvester</h2>
                             <p class="text-sm text-slate-500 mt-1">
-                                服务器端<b>不存密码</b>。点账号行的"🌐 浏览器登录"，把授权 URL 粘贴到本地浏览器完成登录，
-                                再把跳转后的 <code>com.openai.chat://</code> URL 粘贴回来即可。
+                                服务器端<b>不存密码</b>。点账号行的"🍪 粘贴 Cookie"，
+                                把 chatgpt.com 浏览器里的 <code>__Secure-next-auth.session-token</code> 贴过来即可。
                             </p>
                         </div>
                         <div class="flex items-center gap-2 flex-wrap">
@@ -1650,7 +1736,7 @@
                     <li>点下方 <b>[复制 URL]</b> 按钮</li>
                     <li>到浏览器（Chrome / Safari / Firefox）新开标签页粘贴打开</li>
                     <li>输入 OpenAI 邮箱 + 密码，完成 Arkose / 2FA（如有）</li>
-                    <li>登录后浏览器会跳到一个打不开的 URL（以 <code>com.openai.chat://</code> 开头）；弹窗"打开 ChatGPT"点取消，地址栏的 URL 会保留</li>
+                    <li>登录后浏览器会跳转到 <code>http://localhost:1455/auth/callback?code=...</code>，页面可能显示"无法访问"，属于正常——<b>地址栏的完整 URL 依然可见</b></li>
                     <li>从地址栏<b>完整</b>复制该 URL，粘贴到下方输入框，点 <b>[完成]</b></li>
                 </ol>
             </div>
@@ -1664,8 +1750,8 @@
                     </div>
                 </div>
                 <div>
-                    <label class="block text-sm text-slate-500 mb-1">② 粘贴登录后地址栏 URL（com.openai.chat://...?code=...&state=...）</label>
-                    <textarea id="harvAuthCallbackInput" class="w-full min-h-20 p-3 rounded-xl border border-slate-200 font-mono text-xs" placeholder="com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback?code=xxxx&state=yyyy"></textarea>
+                    <label class="block text-sm text-slate-500 mb-1">② 粘贴登录后地址栏 URL（<code>http://localhost:1455/auth/callback?code=...&state=...</code>）</label>
+                    <textarea id="harvAuthCallbackInput" class="w-full min-h-20 p-3 rounded-xl border border-slate-200 font-mono text-xs" placeholder="http://localhost:1455/auth/callback?code=ac_xxxx&state=yyyy"></textarea>
                 </div>
                 <div id="harvAuthSessionInfo" class="text-xs text-slate-500">--</div>
                 <div id="harvAuthErrorBox" class="hidden rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700"></div>
@@ -1674,6 +1760,46 @@
             <div class="flex justify-end gap-3 mt-4">
                 <button id="harvAuthCancel" class="px-4 py-2 rounded-2xl bg-white border border-slate-200 text-sm">取消</button>
                 <button id="harvAuthSubmitButton" class="px-5 py-3 rounded-2xl bg-emerald-600 text-white">完成</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Harvester 粘贴 Cookie 弹窗（主流程）-->
+    <div id="harvCookieModal" class="fixed inset-0 bg-slate-900/50 hidden items-center justify-center p-6">
+        <div class="w-full max-w-2xl bg-white rounded-3xl shadow-xl p-6 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="harvCookieTitle" class="text-xl font-semibold">🍪 粘贴 ChatGPT Session Cookie</h3>
+                <button id="harvCookieClose" class="px-3 py-2 rounded-xl bg-slate-100 text-sm">关闭</button>
+            </div>
+
+            <div class="rounded-2xl bg-blue-50 border border-blue-200 p-4 text-sm text-slate-700 mb-4">
+                <div class="font-semibold mb-2">操作步骤</div>
+                <ol class="list-decimal ml-5 space-y-1">
+                    <li>在你的 Mac 浏览器登录 <b>https://chatgpt.com</b>（确保走代理能访问）</li>
+                    <li>登录成功后按 <b>F12</b> 打开开发者工具</li>
+                    <li>切到 <b>Application</b> 选项卡 → 左侧 <b>Cookies</b> → <b>https://chatgpt.com</b></li>
+                    <li>找到名为 <code>__Secure-next-auth.session-token</code> 的 cookie</li>
+                    <li>双击 <b>Value</b> 列，<b>右键 → Copy value</b>（注意不要复制成别的字段）</li>
+                    <li>粘贴到下方输入框，点 <b>[验证并导入]</b></li>
+                </ol>
+                <div class="text-xs text-slate-500 mt-2">
+                    💡 Cookie 通常是一段很长的 base64 字符串（500+ 字符），类似 <code>eyJhbGciOi...</code> 或 <code>xxx..xxx.xxx.xxx</code>。
+                    寿命约几个月，后端会自动用它换短期 access_token 调用 OpenAI。
+                </div>
+            </div>
+
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-sm text-slate-500 mb-1">Session Cookie 值</label>
+                    <textarea id="harvCookieInput" class="w-full min-h-32 p-3 rounded-xl border border-slate-200 font-mono text-xs" placeholder="粘贴 __Secure-next-auth.session-token 的 Value（通常以 eyJ... 或其他 base64 字符开头）"></textarea>
+                </div>
+                <div id="harvCookieInfo" class="text-xs text-slate-500">--</div>
+                <div id="harvCookieErrorBox" class="hidden rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700"></div>
+            </div>
+
+            <div class="flex justify-end gap-3 mt-4">
+                <button id="harvCookieCancel" class="px-4 py-2 rounded-2xl bg-white border border-slate-200 text-sm">取消</button>
+                <button id="harvCookieSubmit" class="px-5 py-3 rounded-2xl bg-emerald-600 text-white">验证并导入</button>
             </div>
         </div>
     </div>

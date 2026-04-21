@@ -35,14 +35,17 @@ _TOKEN_KEY_NAMES = {
 
 
 def _classify(token: str) -> str:
-    """返回 'access' | 'refresh' | 'unknown'。
+    """返回 'session' | 'access' | 'refresh' | 'unknown'。
 
     与 utils/routing.detect_token_type 规则保持一致：
+      - session: 'sess-' 前缀（chatgpt.com 网页 session cookie，带前缀存储）
       - access: 'eyJhbGciOi' / 'fk-' 开头
       - refresh: 'rt_' 前缀且长度 ≥ 60（新版 Auth0 格式）或 长度 45（老版）
     """
     if not token:
         return "unknown"
+    if token.startswith("sess-"):
+        return "session"
     if token.startswith("eyJhbGciOi") or token.startswith("fk-"):
         return "access"
     if token.startswith("rt_") and len(token) >= 60:
@@ -79,6 +82,7 @@ def _collect_from_json(obj, bucket: Set[str]) -> None:
 
 
 def _build_result(raw_tokens: Set[str], source: str, warnings: Optional[List[str]] = None) -> Dict:
+    session: List[str] = []
     refresh: List[str] = []
     access: List[str] = []
     unknown: List[str] = []
@@ -87,24 +91,29 @@ def _build_result(raw_tokens: Set[str], source: str, warnings: Optional[List[str
         if not t:
             continue
         kind = _classify(t)
-        if kind == "refresh":
+        if kind == "session":
+            session.append(t)
+        elif kind == "refresh":
             refresh.append(t)
         elif kind == "access":
             access.append(t)
         else:
             unknown.append(t)
 
+    session_set = sorted(set(session))
     refresh_set = sorted(set(refresh))
     access_set = sorted(set(access))
     unknown_set = sorted(set(unknown))
 
-    total = len({*refresh_set, *access_set, *unknown_set})
+    total = len({*session_set, *refresh_set, *access_set, *unknown_set})
 
     return {
+        "session_tokens": session_set,
         "refresh_tokens": refresh_set,
         "access_tokens": access_set,
         "unknown": unknown_set,
         "stats": {
+            "session_count": len(session_set),
             "refresh_count": len(refresh_set),
             "access_count": len(access_set),
             "unknown_count": len(unknown_set),

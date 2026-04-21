@@ -81,15 +81,29 @@ init_apply_on_empty = is_true(os.getenv('INIT_APPLY_ON_EMPTY', True))
 init_force = is_true(os.getenv('INIT_FORCE', False))
 
 # ========================= OpenAI Auth0 凭据刷新 =========================
-# 默认 iOS app client_id（老版 45 字符 RefreshToken 适用）
+# 默认 Codex CLI client_id（新版 OpenAI 登录流程，适用于 auth.openai.com 端点）
+# 老版 iOS app client_id `pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh` + auth0.openai.com 已失效（返回 404）
 openai_auth_client_id = os.getenv(
     'OPENAI_AUTH_CLIENT_ID',
-    'pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh',
+    'app_EMoamEEZ73f0CkXaXp7hrann',
 )
-# 默认 iOS 回调 URI
+# 默认 localhost HTTP 回调（Codex CLI 风格，浏览器能正常识别）
 openai_auth_redirect_uri = os.getenv(
     'OPENAI_AUTH_REDIRECT_URI',
-    'com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback',
+    'http://localhost:1455/auth/callback',
+)
+# 新版 Authorize / Token 端点（去掉了 0）
+openai_auth_authorize_url = os.getenv(
+    'OPENAI_AUTH_AUTHORIZE_URL',
+    'https://auth.openai.com/oauth/authorize',
+)
+openai_auth_token_url = os.getenv(
+    'OPENAI_AUTH_TOKEN_URL',
+    'https://auth.openai.com/oauth/token',
+)
+openai_auth_scope = os.getenv(
+    'OPENAI_AUTH_SCOPE',
+    'openid profile email offline_access',
 )
 
 # ========================= Antiban (风控规避层) =========================

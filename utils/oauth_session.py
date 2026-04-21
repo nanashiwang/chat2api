@@ -22,18 +22,18 @@ from typing import Dict, Optional
 from urllib.parse import urlencode
 
 
-# 与 chatgpt/refreshToken.py 和 gateway/share.py 一致的 iOS client_id
-# 可通过环境变量覆盖（同 chat_refresh）
-_DEFAULT_CLIENT_ID = "pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh"
-_DEFAULT_REDIRECT_URI = "com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback"
+# 与 Codex CLI 一致的新版配置（claude-relay-service 已验证可用）
+# 老版 iOS app (pdlLIX... + auth0.openai.com) 已失效，返回 404
+_DEFAULT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+_DEFAULT_REDIRECT_URI = "http://localhost:1455/auth/callback"
 _DEFAULT_AUDIENCE = "https://api.openai.com/v1"
-_DEFAULT_SCOPE = (
-    "openid email profile offline_access model.request model.read "
-    "organization.read organization.write"
-)
+_DEFAULT_SCOPE = "openid profile email offline_access"
+_DEFAULT_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
+_DEFAULT_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 
-AUTH_BASE = "https://auth0.openai.com/authorize"
-TOKEN_ENDPOINT = "https://auth0.openai.com/oauth/token"
+# 向后兼容：保留老常量名（TOKEN_ENDPOINT 被外部引用）
+AUTH_BASE = _DEFAULT_AUTHORIZE_URL
+TOKEN_ENDPOINT = _DEFAULT_TOKEN_ENDPOINT
 
 SESSION_TTL_SECONDS = 15 * 60
 
@@ -91,19 +91,23 @@ def _gc_expired() -> None:
 # ========================= 对外 API =========================
 
 def _get_oauth_config():
-    """允许通过 configs 覆盖 client_id / redirect_uri 等。"""
+    """允许通过 configs 覆盖 client_id / redirect_uri / endpoints。返回 7-tuple。"""
     try:
         from utils import configs
         client_id = getattr(configs, "openai_auth_client_id", None) or _DEFAULT_CLIENT_ID
         redirect_uri = getattr(configs, "openai_auth_redirect_uri", None) or _DEFAULT_REDIRECT_URI
         audience = getattr(configs, "openai_auth_audience", None) or _DEFAULT_AUDIENCE
         scope = getattr(configs, "openai_auth_scope", None) or _DEFAULT_SCOPE
+        authorize_url = getattr(configs, "openai_auth_authorize_url", None) or _DEFAULT_AUTHORIZE_URL
+        token_url = getattr(configs, "openai_auth_token_url", None) or _DEFAULT_TOKEN_ENDPOINT
     except Exception:
         client_id = _DEFAULT_CLIENT_ID
         redirect_uri = _DEFAULT_REDIRECT_URI
         audience = _DEFAULT_AUDIENCE
         scope = _DEFAULT_SCOPE
-    return client_id, redirect_uri, audience, scope
+        authorize_url = _DEFAULT_AUTHORIZE_URL
+        token_url = _DEFAULT_TOKEN_ENDPOINT
+    return client_id, redirect_uri, audience, scope, authorize_url, token_url
 
 
 def start_session(email: str, note: str = "", proxy_name: str = "") -> Dict:
@@ -111,7 +115,7 @@ def start_session(email: str, note: str = "", proxy_name: str = "") -> Dict:
     if not email or "@" not in email:
         raise ValueError("email 不合法")
 
-    client_id, redirect_uri, audience, scope = _get_oauth_config()
+    client_id, redirect_uri, audience, scope, authorize_url, _token_url = _get_oauth_config()
 
     verifier, challenge = _gen_pkce_pair()
     state = _gen_state()
@@ -130,21 +134,22 @@ def start_session(email: str, note: str = "", proxy_name: str = "") -> Dict:
         _gc_expired()
         _sessions[session_id] = sess
 
+    # Codex CLI 风格的 query 参数（额外参数让 OpenAI 返回 organization 信息）
     params = {
-        "client_id": client_id,
-        "audience": audience,
-        "redirect_uri": redirect_uri,
         "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
         "scope": scope,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "state": state,
-        "prompt": "login",
+        "id_token_add_organizations": "true",
+        "codex_cli_simplified_flow": "true",
     }
-    authorize_url = f"{AUTH_BASE}?{urlencode(params)}"
+    full_url = f"{authorize_url}?{urlencode(params)}"
     return {
         "session_id": session_id,
-        "authorize_url": authorize_url,
+        "authorize_url": full_url,
         "redirect_uri": redirect_uri,
         "expires_in": SESSION_TTL_SECONDS,
     }
