@@ -1,5 +1,29 @@
 # Chat2API Harvester
 
+> ⚠️ **DEPRECATED（已废弃，保留供参考）**
+>
+> 本 Playwright CLI 工具已被 chat2api 管理后台内置的"**🌐 浏览器登录**"功能取代。
+>
+> 新方案优势：
+> - 不用在本地装 Playwright / chromium（省 250MB）
+> - 不用维护 `accounts.csv` 密码文件
+> - 不用本地 venv / Python 环境
+> - Arkose 挑战由真实浏览器处理，触发概率更低
+> - 完全 UI 驱动，一个账号 2 次粘贴完成
+>
+> **迁移方法**：
+> 1. 打开 `http://你的服务器:60403/{API_PREFIX}/admin/routing`
+> 2. 左侧 → "账号采集 Harvester"
+> 3. 点某账号行的 **[🌐 浏览器登录]** 按钮，按向导 2 次粘贴 URL 即可
+>
+> 本目录代码仅作为历史参考保留。**无需运行本目录任何命令**。
+>
+> 确认新方案无问题后可以直接 `rm -rf harvester/` 整个目录。
+
+---
+
+## （以下为原文档，仅供参考）
+
 > 自家 ChatGPT 账号池 → RefreshToken 自动采集 → 写入 chat2api
 
 本地 Python + Playwright 工具，用 iOS ChatGPT app 的 OAuth2 PKCE 流程，从自家账号登录并拿到 `rt_*` RefreshToken，自动通过管理后台 API 写入 chat2api 账号池。**一次人工辅助跑完，后续 2-3 个月由 chat2api 内建 `SCHEDULED_REFRESH` 接管刷新**。

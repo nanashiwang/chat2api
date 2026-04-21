@@ -698,6 +698,196 @@ async def routing_admin_harvester_report(request: Request):
     return JSONResponse({"status": "success", "account": rec})
 
 
+# ============ Harvester 浏览器登录（OAuth PKCE，用户在本地浏览器完成）============
+
+async def routing_admin_harvester_authorize_start(request: Request):
+    """启动一次 OAuth 授权会话，返回 authorize_url 供前端展示给用户复制。"""
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    email = (body.get("email") or "").strip()
+    note = (body.get("note") or "").strip()
+    proxy_name = (body.get("proxy_name") or "").strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="email 不合法")
+
+    from utils import oauth_session
+    try:
+        result = oauth_session.start_session(email, note=note, proxy_name=proxy_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    logger.info(f"[harvester-auth] start session for {email}")
+    return JSONResponse({"status": "success", **result})
+
+
+async def routing_admin_harvester_authorize_exchange(request: Request):
+    """用户粘贴浏览器地址栏的 com.openai.chat://...?code=X&state=Y 过来。
+
+    步骤：
+      1. pop session（验证 session_id 有效且未过期，一次性消费）
+      2. 解析 callback URL 拿 code / state
+      3. 校验 state 防 CSRF
+      4. 用 verifier + code 调 Auth0 /oauth/token 换 refresh_token
+      5. 调已有 routing_admin_import_accounts 的内部逻辑写入 chat2api 账号池
+      6. 通过 harvester_meta.report_harvest 更新看板
+    """
+    require_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    session_id = (body.get("session_id") or "").strip()
+    callback_url = (body.get("callback_url") or "").strip()
+    if not session_id or not callback_url:
+        raise HTTPException(status_code=400, detail="session_id 和 callback_url 必填")
+
+    from urllib.parse import parse_qs, urlparse
+    from utils import harvester_meta, oauth_session
+
+    sess = oauth_session.pop_session(session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期，请重新开始")
+
+    # 解析回调 URL
+    parsed = urlparse(callback_url)
+    qs = parse_qs(parsed.query)
+
+    # error 优先
+    if qs.get("error"):
+        err = qs.get("error", ["unknown"])[0]
+        desc = qs.get("error_description", [""])[0]
+        harvester_meta.report_harvest(
+            email=sess.email, success=False, error=f"{err}: {desc}"[:200]
+        )
+        raise HTTPException(status_code=400, detail=f"OAuth 错误: {err} {desc}")
+
+    code_list = qs.get("code")
+    state_list = qs.get("state")
+    if not code_list or not state_list:
+        harvester_meta.report_harvest(
+            email=sess.email, success=False, error="callback URL 缺 code/state"
+        )
+        raise HTTPException(status_code=400, detail="回调 URL 中未找到 code 或 state")
+
+    code = code_list[0]
+    returned_state = state_list[0]
+    if returned_state != sess.state:
+        harvester_meta.report_harvest(
+            email=sess.email, success=False, error="state mismatch (CSRF?)"
+        )
+        raise HTTPException(status_code=400, detail="state 不匹配，可能是 CSRF 或会话错配")
+
+    # 换 token
+    token_set = await _exchange_code_for_tokens(code, sess)
+    rt = token_set.get("refresh_token", "")
+    if not rt:
+        harvester_meta.report_harvest(
+            email=sess.email, success=False, error="Auth0 未返回 refresh_token"
+        )
+        raise HTTPException(status_code=502, detail="Auth0 响应缺 refresh_token")
+
+    rt_prefix = rt[:12]
+
+    # 复用现有的 import_accounts 业务逻辑：这里为了避免构造假 request，直接调用底层
+    try:
+        await _harvester_import_rt(sess, rt)
+    except Exception as e:
+        harvester_meta.report_harvest(
+            email=sess.email, success=False, error=f"import failed: {e}"[:200]
+        )
+        raise HTTPException(status_code=500, detail=f"写入 chat2api 失败: {e}")
+
+    # 更新看板
+    harvester_meta.report_harvest(
+        email=sess.email,
+        rt_prefix=rt_prefix,
+        success=True,
+        imported_token=rt,
+    )
+    logger.info(f"[harvester-auth] ✓ {sess.email} → rt_prefix={rt_prefix[:8]}...")
+    return JSONResponse({
+        "status": "success",
+        "email": sess.email,
+        "rt_prefix": rt_prefix,
+    })
+
+
+async def _exchange_code_for_tokens(code: str, sess) -> dict:
+    """调用 Auth0 /oauth/token 换 refresh_token。"""
+    from utils.Client import Client
+    from utils import oauth_session as _oauth
+
+    client_id, redirect_uri, _audience, _scope = _oauth._get_oauth_config()
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "code": code,
+        "code_verifier": sess.verifier,
+    }
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "ChatGPT/1.2025.084 (iOS 17.5.1; iPhone15,3; build 1402)",
+    }
+
+    # 复用现有 Client；关闭 impersonate 避免被 WAF 当浏览器（见 refreshToken.py 同样处理）
+    c = Client(impersonate=None)
+    try:
+        r = await c.post(_oauth.TOKEN_ENDPOINT, json=data, headers=headers, timeout=20)
+        raw = (r.text or "").strip()
+        if r.status_code != 200:
+            raise RuntimeError(f"Auth0 status={r.status_code} body={raw[:300]}")
+        import json as _json
+        payload = _json.loads(raw)
+        if "refresh_token" not in payload:
+            raise RuntimeError(f"Auth0 缺 refresh_token: keys={list(payload.keys())}")
+        return payload
+    finally:
+        await c.close()
+
+
+async def _harvester_import_rt(sess, refresh_token: str) -> None:
+    """把 rt 写入 chat2api 账号池（复用现有 import 流程的底层调用）。"""
+    from utils.routing import (
+        get_routing_config,
+        update_account_meta,
+    )
+    # 加到 globals.token_list + token.txt
+    if refresh_token not in globals.token_list:
+        globals.token_list.append(refresh_token)
+        with open(globals.TOKENS_FILE, "a", encoding="utf-8") as f:
+            f.write(refresh_token + "\n")
+
+    # 绑定代理 / 备注
+    proxy_url = ""
+    proxy_name = sess.proxy_name or ""
+    if proxy_name:
+        cfg = get_routing_config()
+        match = next(
+            (p for p in cfg.get("proxies", []) if p.get("name") == proxy_name),
+            None,
+        )
+        if match:
+            proxy_url = match.get("proxy_url", "") or ""
+        else:
+            logger.warning(
+                f"[harvester-auth] proxy_name='{proxy_name}' 未找到，rt 已导入但不绑定代理"
+            )
+    note = f"{sess.email}" + (f" · {sess.note}" if sess.note else "")
+    update_account_meta(
+        refresh_token,
+        note=note,
+        group_name=None,
+        proxy_name=proxy_name if proxy_url else None,
+        proxy_url=proxy_url if proxy_url else None,
+    )
+
+
 app.add_api_route("/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
 app.add_api_route("/admin/routing/data", routing_admin_data, methods=["GET"])
 app.add_api_route("/admin/routing/save", routing_admin_save, methods=["POST"])
@@ -718,6 +908,8 @@ app.add_api_route("/admin/harvester/accounts", routing_admin_harvester_upsert, m
 app.add_api_route("/admin/harvester/accounts/delete", routing_admin_harvester_delete, methods=["POST"])
 app.add_api_route("/admin/harvester/accounts/bulk-import", routing_admin_harvester_bulk_import, methods=["POST"])
 app.add_api_route("/admin/harvester/report", routing_admin_harvester_report, methods=["POST"])
+app.add_api_route("/admin/harvester/authorize/start", routing_admin_harvester_authorize_start, methods=["POST"])
+app.add_api_route("/admin/harvester/authorize/exchange", routing_admin_harvester_authorize_exchange, methods=["POST"])
 
 if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/routing", routing_admin_page, methods=["GET"], response_class=HTMLResponse)
@@ -740,3 +932,5 @@ if api_prefix:
     app.add_api_route(f"/{api_prefix}/admin/harvester/accounts/delete", routing_admin_harvester_delete, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/harvester/accounts/bulk-import", routing_admin_harvester_bulk_import, methods=["POST"])
     app.add_api_route(f"/{api_prefix}/admin/harvester/report", routing_admin_harvester_report, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/harvester/authorize/start", routing_admin_harvester_authorize_start, methods=["POST"])
+    app.add_api_route(f"/{api_prefix}/admin/harvester/authorize/exchange", routing_admin_harvester_authorize_exchange, methods=["POST"])

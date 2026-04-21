@@ -24,6 +24,8 @@
             const harvAccountsApi = `${basePath}/admin/harvester/accounts`;
             const harvDeleteApi = `${basePath}/admin/harvester/accounts/delete`;
             const harvBulkApi = `${basePath}/admin/harvester/accounts/bulk-import`;
+            const harvAuthStartApi = `${basePath}/admin/harvester/authorize/start`;
+            const harvAuthExchangeApi = `${basePath}/admin/harvester/authorize/exchange`;
 
             const summaryGrid = document.getElementById('summaryGrid');
             const ipGrid = document.getElementById('ipGrid');
@@ -90,7 +92,6 @@
             const harvRefreshButton = document.getElementById('harvRefreshButton');
             const harvAddButton = document.getElementById('harvAddButton');
             const harvBulkImportButton = document.getElementById('harvBulkImportButton');
-            const harvCopyAllButton = document.getElementById('harvCopyAllButton');
             const harvEditModal = document.getElementById('harvEditModal');
             const harvEditTitle = document.getElementById('harvEditTitle');
             const harvEditClose = document.getElementById('harvEditClose');
@@ -103,6 +104,17 @@
             const harvBulkSubmit = document.getElementById('harvBulkSubmit');
             const harvBulkFile = document.getElementById('harvBulkFile');
             const harvBulkJson = document.getElementById('harvBulkJson');
+            // Harvester 浏览器登录
+            const harvAuthModal = document.getElementById('harvAuthModal');
+            const harvAuthTitle = document.getElementById('harvAuthTitle');
+            const harvAuthClose = document.getElementById('harvAuthClose');
+            const harvAuthCancel = document.getElementById('harvAuthCancel');
+            const harvAuthUrlInput = document.getElementById('harvAuthUrlInput');
+            const harvAuthCopyUrlButton = document.getElementById('harvAuthCopyUrlButton');
+            const harvAuthCallbackInput = document.getElementById('harvAuthCallbackInput');
+            const harvAuthSubmitButton = document.getElementById('harvAuthSubmitButton');
+            const harvAuthSessionInfo = document.getElementById('harvAuthSessionInfo');
+            const harvAuthErrorBox = document.getElementById('harvAuthErrorBox');
             let proxyOptions = [];
             let accountsCache = [];
             let editingToken = '';
@@ -873,20 +885,105 @@
             }
 
             function harvBuildCmd(email) {
-                // 一行命令，假设用户已 cd 到 harvester 并 source .venv
-                // 兼容：给出进入目录 + 激活 + 运行的完整三段
+                // 历史兼容：保留给将来可能的 CLI 模式；当前 UI 不使用
                 const target = email ? `--only ${email}` : '';
-                return `cd /Users/nanashiwang/Documents/Projects/chat2api/harvester && source .venv/bin/activate && python -m src.harvest ${target}`.trim();
+                return `# 已废弃的 Harvester CLI 模式\ncd /Users/nanashiwang/Documents/Projects/chat2api/harvester && source .venv/bin/activate && python -m src.harvest ${target}`.trim();
             }
 
-            async function harvCopyCmd(email) {
-                const cmd = harvBuildCmd(email);
-                try {
-                    await navigator.clipboard.writeText(cmd);
-                    harvStatusText.textContent = `已复制命令 → ${email || '全部'}`;
-                } catch (e) {
-                    prompt('复制失败，请手工复制：', cmd);
+            // ========= 浏览器登录流程 =========
+            let harvAuthCurrent = null;  // {session_id, authorize_url, email, expires_in, started_at}
+
+            async function harvStartAuth(email) {
+                const acc = harvAccountsCache.find((x) => x.email.toLowerCase() === email.toLowerCase());
+                if (!acc) {
+                    alert('账号不存在，请先"新增账号"');
+                    return;
                 }
+                const payload = {
+                    email: acc.email,
+                    note: acc.note || '',
+                    proxy_name: acc.proxy_name || '',
+                };
+                const resp = await fetch(harvAuthStartApi, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    alert(data.detail || '启动授权失败');
+                    return;
+                }
+                harvAuthCurrent = {
+                    session_id: data.session_id,
+                    authorize_url: data.authorize_url,
+                    email: acc.email,
+                    expires_in: data.expires_in || 900,
+                    started_at: Date.now(),
+                };
+                harvAuthTitle.textContent = `浏览器登录 - ${acc.email}`;
+                harvAuthUrlInput.value = data.authorize_url;
+                harvAuthCallbackInput.value = '';
+                harvAuthSessionInfo.textContent = `会话 ID: ${data.session_id.slice(0,8)}... · TTL ${Math.round(data.expires_in/60)} 分钟`;
+                harvAuthErrorBox.classList.add('hidden');
+                harvAuthModal.classList.remove('hidden');
+                harvAuthModal.classList.add('flex');
+            }
+
+            async function harvCopyAuthUrl() {
+                if (!harvAuthCurrent) return;
+                try {
+                    await navigator.clipboard.writeText(harvAuthCurrent.authorize_url);
+                    harvAuthSessionInfo.textContent = '已复制授权 URL，请到本地浏览器粘贴登录 ↗';
+                } catch (e) {
+                    harvAuthUrlInput.select();
+                    document.execCommand('copy');
+                    harvAuthSessionInfo.textContent = '已选中 URL（请手动 Ctrl/Cmd+C）';
+                }
+            }
+
+            async function harvSubmitCallback() {
+                if (!harvAuthCurrent) return;
+                const callback = harvAuthCallbackInput.value.trim();
+                if (!callback) {
+                    alert('请粘贴浏览器登录完成后地址栏的 URL（以 com.openai.chat:// 开头）');
+                    return;
+                }
+                harvAuthSubmitButton.disabled = true;
+                harvAuthSubmitButton.textContent = '交换中...';
+                harvAuthErrorBox.classList.add('hidden');
+                try {
+                    const resp = await fetch(harvAuthExchangeApi, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            session_id: harvAuthCurrent.session_id,
+                            callback_url: callback,
+                        }),
+                    });
+                    const data = await resp.json();
+                    if (!resp.ok) {
+                        harvAuthErrorBox.textContent = data.detail || '换取 token 失败';
+                        harvAuthErrorBox.classList.remove('hidden');
+                        return;
+                    }
+                    alert(`✅ 成功导入 ${data.email} (rt=${(data.rt_prefix || '').slice(0,8)}...)`);
+                    harvCloseAuth();
+                    await harvLoad();
+                } catch (e) {
+                    harvAuthErrorBox.textContent = '网络错误：' + e.message;
+                    harvAuthErrorBox.classList.remove('hidden');
+                } finally {
+                    harvAuthSubmitButton.disabled = false;
+                    harvAuthSubmitButton.textContent = '完成';
+                }
+            }
+
+            function harvCloseAuth() {
+                harvAuthCurrent = null;
+                harvAuthModal.classList.add('hidden');
+                harvAuthModal.classList.remove('flex');
+                harvAuthCallbackInput.value = '';
             }
 
             function harvRenderStats(stats) {
@@ -919,7 +1016,7 @@
                         <td class="py-2 pr-3 text-xs">${harvFormatTs(a.last_harvest_at)}</td>
                         <td class="py-2 pr-3">${harvStatusChip(a.status)}</td>
                         <td class="py-2 pr-3 whitespace-nowrap">
-                            <button data-harv-cmd="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-xs">复制命令</button>
+                            <button data-harv-auth="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-xs">🌐 浏览器登录</button>
                             <button data-harv-edit="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-slate-200 text-xs ml-1">编辑</button>
                             <button data-harv-del="${escapeHtml(a.email)}" class="px-2 py-1 rounded-lg bg-red-100 text-red-700 text-xs ml-1">删除</button>
                         </td>
@@ -1045,7 +1142,6 @@
             harvAddButton.addEventListener('click', () => harvOpenEdit(''));
             harvEditClose.addEventListener('click', harvCloseEdit);
             harvEditSubmit.addEventListener('click', harvSaveEdit);
-            harvCopyAllButton.addEventListener('click', () => harvCopyCmd(''));
             harvBulkImportButton.addEventListener('click', () => {
                 harvBulkModal.classList.remove('hidden');
                 harvBulkModal.classList.add('flex');
@@ -1056,14 +1152,20 @@
             });
             harvBulkSubmit.addEventListener('click', harvBulkSubmitHandler);
 
+            // 授权弹窗
+            harvAuthCopyUrlButton.addEventListener('click', harvCopyAuthUrl);
+            harvAuthClose.addEventListener('click', harvCloseAuth);
+            harvAuthCancel.addEventListener('click', harvCloseAuth);
+            harvAuthSubmitButton.addEventListener('click', harvSubmitCallback);
+
             // 表格行操作委托
             harvAccountsTable.addEventListener('click', (e) => {
                 const target = e.target;
                 if (!(target instanceof HTMLElement)) return;
-                const cmdEmail = target.getAttribute('data-harv-cmd');
+                const authEmail = target.getAttribute('data-harv-auth');
                 const editEmail = target.getAttribute('data-harv-edit');
                 const delEmail = target.getAttribute('data-harv-del');
-                if (cmdEmail) return harvCopyCmd(cmdEmail);
+                if (authEmail) return harvStartAuth(authEmail);
                 if (editEmail) return harvOpenEdit(editEmail);
                 if (delEmail) return harvDelete(delEmail);
             });
@@ -1312,14 +1414,13 @@
                         <div>
                             <h2 class="text-xl font-semibold">账号采集 Harvester</h2>
                             <p class="text-sm text-slate-500 mt-1">
-                                管理 email 清单（服务器端不存密码），每 60-90 天在本地 Mac 跑一次 Harvester 补齐 RefreshToken。
-                                点"复制命令"到本地 Terminal 粘贴执行即可。
+                                服务器端<b>不存密码</b>。点账号行的"🌐 浏览器登录"，把授权 URL 粘贴到本地浏览器完成登录，
+                                再把跳转后的 <code>com.openai.chat://</code> URL 粘贴回来即可。
                             </p>
                         </div>
                         <div class="flex items-center gap-2 flex-wrap">
                             <button id="harvAddButton" class="px-3 py-2 rounded-2xl bg-slate-900 text-white text-sm">新增账号</button>
                             <button id="harvBulkImportButton" class="px-3 py-2 rounded-2xl bg-white border border-slate-200 text-sm">批量导入</button>
-                            <button id="harvCopyAllButton" class="px-3 py-2 rounded-2xl bg-emerald-600 text-white text-sm">复制全量命令</button>
                             <button id="harvRefreshButton" class="px-3 py-2 rounded-2xl bg-slate-100 text-sm">刷新</button>
                         </div>
                     </div>
@@ -1531,6 +1632,48 @@
             </div>
             <div class="flex justify-end gap-3 mt-4">
                 <button id="harvBulkSubmit" class="px-5 py-3 rounded-2xl bg-slate-900 text-white">导入</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Harvester 浏览器登录弹窗 -->
+    <div id="harvAuthModal" class="fixed inset-0 bg-slate-900/50 hidden items-center justify-center p-6">
+        <div class="w-full max-w-2xl bg-white rounded-3xl shadow-xl p-6 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="harvAuthTitle" class="text-xl font-semibold">浏览器登录</h3>
+                <button id="harvAuthClose" class="px-3 py-2 rounded-xl bg-slate-100 text-sm">关闭</button>
+            </div>
+
+            <div class="rounded-2xl bg-blue-50 border border-blue-200 p-4 text-sm text-slate-700 mb-4">
+                <div class="font-semibold mb-2">操作步骤</div>
+                <ol class="list-decimal ml-5 space-y-1">
+                    <li>点下方 <b>[复制 URL]</b> 按钮</li>
+                    <li>到浏览器（Chrome / Safari / Firefox）新开标签页粘贴打开</li>
+                    <li>输入 OpenAI 邮箱 + 密码，完成 Arkose / 2FA（如有）</li>
+                    <li>登录后浏览器会跳到一个打不开的 URL（以 <code>com.openai.chat://</code> 开头）；弹窗"打开 ChatGPT"点取消，地址栏的 URL 会保留</li>
+                    <li>从地址栏<b>完整</b>复制该 URL，粘贴到下方输入框，点 <b>[完成]</b></li>
+                </ol>
+            </div>
+
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-sm text-slate-500 mb-1">① 授权 URL（复制到浏览器打开）</label>
+                    <div class="flex gap-2">
+                        <input id="harvAuthUrlInput" readonly class="flex-1 px-3 py-2 rounded-xl border border-slate-200 font-mono text-xs bg-slate-50">
+                        <button id="harvAuthCopyUrlButton" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm whitespace-nowrap">复制 URL</button>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm text-slate-500 mb-1">② 粘贴登录后地址栏 URL（com.openai.chat://...?code=...&state=...）</label>
+                    <textarea id="harvAuthCallbackInput" class="w-full min-h-20 p-3 rounded-xl border border-slate-200 font-mono text-xs" placeholder="com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback?code=xxxx&state=yyyy"></textarea>
+                </div>
+                <div id="harvAuthSessionInfo" class="text-xs text-slate-500">--</div>
+                <div id="harvAuthErrorBox" class="hidden rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700"></div>
+            </div>
+
+            <div class="flex justify-end gap-3 mt-4">
+                <button id="harvAuthCancel" class="px-4 py-2 rounded-2xl bg-white border border-slate-200 text-sm">取消</button>
+                <button id="harvAuthSubmitButton" class="px-5 py-3 rounded-2xl bg-emerald-600 text-white">完成</button>
             </div>
         </div>
     </div>
