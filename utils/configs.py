@@ -22,6 +22,13 @@ def is_true(x):
 api_prefix = os.getenv('API_PREFIX', None)
 authorization = os.getenv('AUTHORIZATION', '').replace(' ', '')
 admin_password = os.getenv('ADMIN_PASSWORD', None)
+# 管理后台 IP 白名单（逗号分隔，支持单 IP / CIDR / 'trust_proxy'）
+# 空串 = 不启用（允许所有 IP 访问登录页；真正 API 仍受 ADMIN_PASSWORD 保护）
+# 示例: ADMIN_IP_WHITELIST="1.2.3.4,10.0.0.0/8,192.168.1.0/24"
+admin_ip_whitelist_raw = os.getenv('ADMIN_IP_WHITELIST', '').replace(' ', '')
+admin_ip_whitelist = [x for x in admin_ip_whitelist_raw.split(',') if x]
+# 是否信任 X-Forwarded-For 头（仅在 CF / Nginx 反代场景开启，否则可被伪造绕过）
+admin_trust_proxy = os.getenv('ADMIN_TRUST_PROXY', '').lower() in ('true', '1', 'yes')
 chatgpt_base_url = os.getenv('CHATGPT_BASE_URL', 'https://chatgpt.com').replace(' ', '')
 auth_key = os.getenv('AUTH_KEY', None)
 x_sign = os.getenv('X_SIGN', None)
@@ -142,6 +149,7 @@ logger.info("------------------------- Security -------------------------")
 logger.info("API_PREFIX:        " + str(api_prefix))
 logger.info("AUTHORIZATION:     " + str(authorization_list))
 logger.info("ADMIN_PASSWORD:    " + str(bool(admin_password)))
+logger.info("ADMIN_IP_WHITELIST:" + (f" {len(admin_ip_whitelist)} rule(s) [{'trust_proxy' if admin_trust_proxy else 'no_proxy'}]" if admin_ip_whitelist else " (disabled)"))
 logger.info("AUTH_KEY:          " + str(auth_key))
 logger.info("------------------------- Request --------------------------")
 logger.info("CHATGPT_BASE_URL:  " + str(chatgpt_base_url_list))

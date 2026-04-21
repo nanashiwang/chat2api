@@ -10,6 +10,61 @@
 
 👮 配套用户管理端[Chat-Share](https://github.com/h88782481/Chat-Share)使用前需提前配置好环境变量（ENABLE_GATEWAY设置为True，AUTO_SEED设置为False）
 
+---
+
+## ✨ nanashiwang 分支新特性
+
+> 本分支在上游基础上做了大量工程化增强，**适合生产部署**。完整说明见 [`docs/FEATURES.md`](docs/FEATURES.md)。
+
+### 一键部署（零交互）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
+```
+
+脚本自动：装 Docker → 下载 compose → 生成随机 ADMIN/API 密钥 → 启动 → 打印访问地址。
+
+### 新增能力一览
+
+| 能力 | 说明 | 文档 |
+|---|---|---|
+| 🛡️ **Antiban 风控层** | IP-账号粘性桶 / 账号冷却 / 地域一致性 / 熔断自愈 | [FEATURES#1](docs/FEATURES.md#1-antiban-风控规避层) |
+| 🍪 **Harvester 采集** | UI 上粘贴 chatgpt.com session cookie 自动验证+导入 | [COOKIE_HARVEST](docs/COOKIE_HARVEST.md) |
+| 📂 **文件上传导入** | .txt / .json 自动解析，预览后确认导入 | [FEATURES#3](docs/FEATURES.md#3-管理后台增强) |
+| 📝 **系统日志 UI** | 实时轮询 / 级别筛选 / 关键字搜索 / 一键下载 | [FEATURES#4](docs/FEATURES.md#4-系统日志-ui) |
+| 🔐 **安全加固** | IP 白名单 / HttpOnly / CSRF / 密码隔离 / CF 指引 | [SECURITY](docs/SECURITY.md) |
+| 🔄 **UI 代理热加载** | 添加/删除代理即时生效，不需重启 | [FEATURES#3](docs/FEATURES.md#3-管理后台增强) |
+| 🎯 **新版 Token 识别** | 支持 `rt_*` 新格式 + `sess-*` SessionToken + chat_refresh 现代化 | [FEATURES#6](docs/FEATURES.md#6-新版-token-支持) |
+
+### 核心运维流程
+
+```
+1. 一键部署 (install.sh)
+       ↓
+2. 登录管理后台 (URL 从部署脚本最后输出)
+       ↓
+3. 配置 IP 白名单 (SECURITY.md)        ← 强烈建议
+       ↓
+4. (可选) 代理与路由 → 添加住宅代理
+       ↓
+5. 账号采集 Harvester → 🍪 粘贴 Cookie  ← 主流程
+       ↓
+6. 开始使用 /v1/chat/completions
+       ↓
+7. Cookie 过期 (数月后) → 重抓并替换
+```
+
+### Cookie 抓取快速链接
+
+需要在**和 chat2api 出口 IP 相似的地区**登录 chatgpt.com 抓 cookie。完整指南（含 SSH 隧道技巧）见 [`docs/COOKIE_HARVEST.md`](docs/COOKIE_HARVEST.md)。
+
+速抓命令：
+```javascript
+// 浏览器登录 chatgpt.com 后，F12 Console 执行
+document.cookie.split(';').filter(x=>x.includes('session-token')).join('; ')
+```
+
+---
 
 ## 交流群
 

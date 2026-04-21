@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import time
 from collections import defaultdict, deque
@@ -7,7 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 
 from app import app, templates
 from utils.Client import Client
-from utils.configs import admin_password, api_prefix, authorization_list
+from utils.configs import admin_password, admin_ip_whitelist, admin_trust_proxy, api_prefix, authorization_list
 from utils.Logger import logger
 from utils.routing import (
     build_group_assignments,
@@ -62,12 +63,58 @@ def get_admin_secrets():
 
 
 def get_client_key(request: Request):
-    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    if forwarded:
-        return forwarded
+    """获取客户端 IP。
+
+    仅在 ADMIN_TRUST_PROXY=true 时读 X-Forwarded-For，否则用真实 TCP 连接 IP。
+    避免攻击者伪造 XFF 头绕过白名单。
+    """
+    if admin_trust_proxy:
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
     if request.client:
         return request.client.host
     return "unknown"
+
+
+def _is_ip_whitelisted(request: Request) -> bool:
+    """检查客户端 IP 是否在白名单。空白名单 = 全放行。"""
+    if not admin_ip_whitelist:
+        return True
+    client_ip = get_client_key(request)
+    if client_ip in ("unknown", ""):
+        return False
+    try:
+        ip_obj = ipaddress.ip_address(client_ip)
+    except ValueError:
+        logger.warning(f"[admin-ipwl] 无法解析客户端 IP: {client_ip}")
+        return False
+    for rule in admin_ip_whitelist:
+        rule = rule.strip()
+        if not rule:
+            continue
+        try:
+            if "/" in rule:
+                if ip_obj in ipaddress.ip_network(rule, strict=False):
+                    return True
+            else:
+                if client_ip == rule or ip_obj == ipaddress.ip_address(rule):
+                    return True
+        except ValueError:
+            logger.warning(f"[admin-ipwl] 白名单规则无效: {rule}")
+            continue
+    return False
+
+
+def require_ip_whitelist(request: Request):
+    """IP 白名单检查：不在白名单的直接 403，连登录页都看不到。"""
+    if not _is_ip_whitelisted(request):
+        client_ip = get_client_key(request)
+        logger.warning(f"[admin-ipwl] 拒绝 IP: {client_ip}")
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: your IP is not whitelisted for admin backend",
+        )
 
 
 def check_rate_limit(bucket_key, limit, window_seconds):
@@ -114,7 +161,9 @@ def get_current_admin_token(request: Request):
 
 
 def require_admin_auth(request: Request):
-    # 安全要求：未配置 ADMIN_PASSWORD 时，后台接口一律拒绝（不再放行）
+    # 第一道：IP 白名单（若开启）
+    require_ip_whitelist(request)
+    # 第二道：未配置 ADMIN_PASSWORD 时，后台接口一律拒绝（不再放行）
     if not get_admin_secrets():
         raise HTTPException(
             status_code=503,
@@ -126,6 +175,7 @@ def require_admin_auth(request: Request):
 
 
 async def routing_admin_login_page(request: Request):
+    require_ip_whitelist(request)
     check_rate_limit(f"admin-page:{get_client_key(request)}", 60, 60)
     if not get_admin_secrets():
         raise HTTPException(
@@ -144,6 +194,7 @@ async def routing_admin_login_page(request: Request):
 
 
 async def routing_admin_login_submit(request: Request):
+    require_ip_whitelist(request)
     client_key = get_client_key(request)
     ensure_login_not_locked(client_key)
     check_rate_limit(f"admin-login:{client_key}", 10, 300)
@@ -195,6 +246,7 @@ async def routing_admin_logout(request: Request):
 
 
 async def routing_admin_page(request: Request):
+    require_ip_whitelist(request)
     check_rate_limit(f"admin-page:{get_client_key(request)}", 60, 60)
     if not get_admin_secrets():
         raise HTTPException(
@@ -229,16 +281,35 @@ async def routing_admin_save(request: Request):
 
     proxies = body.get("proxies", [])
     group_size = body.get("group_size", 25)
-    if not isinstance(proxies, list) or not proxies:
-        raise HTTPException(status_code=400, detail="proxies is required")
+    if not isinstance(proxies, list):
+        raise HTTPException(status_code=400, detail="proxies must be a list")
+    # 允许清空代理池（直连模式）：传 [] 时清理所有 bindings
+    if not proxies:
+        logger.info("[admin] clearing all proxies (direct mode)")
+        empty_config = {
+            "proxies": [],
+            "groups": [],
+            "bindings": {},
+            "account_meta": get_routing_config().get("account_meta", {}),
+        }
+        save_routing_config(empty_config)
+        sync_bindings_to_fp({})
+    else:
+        result = build_group_assignments(list(globals.token_list), proxies, group_size)
+        save_routing_config(result)
+        sync_bindings_to_fp(result["bindings"])
 
-    result = build_group_assignments(list(globals.token_list), proxies, group_size)
-    save_routing_config(result)
-    sync_bindings_to_fp(result["bindings"])
+    # 热同步 antiban 桶：不重启即生效
+    try:
+        from utils.antiban import bucket as _bucket
+        _bucket.resync_from_routing()
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[admin] antiban resync failed: {e}")
+
     return JSONResponse(
         {
             "status": "success",
-            "message": "Routing config saved",
+            "message": "Routing config saved" if proxies else "Proxies cleared (direct mode)",
             "summary": get_dashboard_payload()["summary"],
         }
     )
@@ -263,6 +334,12 @@ async def routing_admin_bind_account(request: Request):
         proxy_name = proxy.get("name") if proxy else "Custom Proxy"
 
     binding = update_single_binding(token, proxy_name, proxy_url)
+    # 热同步 antiban 桶
+    try:
+        from utils.antiban import bucket as _bucket
+        _bucket.resync_from_routing()
+    except Exception as e:
+        logger.warning(f"[admin] antiban resync failed: {e}")
     return JSONResponse({"status": "success", "binding": binding})
 
 
@@ -925,6 +1002,13 @@ async def routing_admin_harvester_import_cookie(request: Request):
 def _parse_session_cookie_input(raw: str) -> str:
     """从用户粘贴的原始输入中提取 NextAuth session-token，按分片顺序拼接。
 
+    支持 5 种粘贴姿势：
+      1. 整段 document.cookie      "_ga=x; __Secure-next-auth.session-token.0=v0; __Secure-next-auth.session-token.1=v1; ..."
+      2. 只带 session 的 cookie 串 "__Secure-next-auth.session-token.0=v0; __Secure-next-auth.session-token.1=v1"
+      3. 单片（老版）               "__Secure-next-auth.session-token=value"
+      4. 裸 value 分号拼接（F12 Application 逐个复制后拼）  "value0;value1"
+      5. 单个裸 value（未分片时）   "eyJxxx.yyy.zzz..."
+
     返回内部存储用的字符串：
       - 单片：cookie 原值
       - 多片：chunk0|||chunk1|||chunk2...
@@ -933,38 +1017,56 @@ def _parse_session_cookie_input(raw: str) -> str:
     from chatgpt.refreshToken import SESS_CHUNK_SEPARATOR
 
     txt = raw.strip()
-    # 去掉可能的 "Cookie:" 前缀
+    # 去掉 "Cookie:" 前缀
     if txt.lower().startswith("cookie:"):
         txt = txt[7:].strip()
 
-    # 情况 1：整段看起来就是一个 cookie 值（没有分号、没有 =）
+    # 归一化全角标点（用户可能用输入法不小心敲成全角）
+    txt = txt.translate(str.maketrans({
+        "\uff1b": ";",   # ； 全角分号
+        "\uff1d": "=",   # ＝ 全角等号
+        "\u3000": " ",   # 　 全角空格
+        "\uff1a": ":",   # ： 全角冒号
+    }))
+
+    # 情况 1：整段只是一个裸值（无 ; 无 =）
     if "=" not in txt and ";" not in txt:
         return txt
 
-    # 情况 2：解析 cookie 串，提取 __Secure-next-auth.session-token.N 所有片
-    # 支持格式: `name=value; name2=value2; __Secure-next-auth.session-token.0=xxx; ...`
-    chunks = {}  # {index: value}
-    single_match = None
-    # 按分号分段
+    indexed_chunks = {}       # {.N 下标: value}（带 name.N）
+    single_match = None        # 带 name 的单片
+    positional_chunks = []     # 没 name 的裸 value（按顺序收集）
+
     for part in re.split(r";\s*", txt):
-        if not part or "=" not in part:
+        part = part.strip()
+        if not part:
             continue
+
+        if "=" not in part:
+            # 没 name 的裸 value：只接受看起来像 JWE/base64url 的长片段
+            # 避免把 cookie 噪音碎片误吞
+            if len(part) >= 50 and re.match(r"^[A-Za-z0-9_\-\.=+/]+$", part):
+                positional_chunks.append(part)
+            continue
+
         key, _, value = part.partition("=")
         key = key.strip()
         value = value.strip()
-        # 匹配 __Secure-next-auth.session-token.N 格式（分片）
+        # 带下标的 __Secure-next-auth.session-token.N
         m = re.match(r"^__Secure-next-auth\.session-token\.(\d+)$", key)
         if m:
-            chunks[int(m.group(1))] = value
+            indexed_chunks[int(m.group(1))] = value
             continue
-        # 匹配不带下标的（单片旧版或非标准格式）
-        if key in ("__Secure-next-auth.session-token", "__Host-next-auth.session-token",
+        # 不带下标的单片（老版或非分片情况）
+        if key in ("__Secure-next-auth.session-token",
+                   "__Host-next-auth.session-token",
                    "next-auth.session-token"):
             single_match = value
 
-    if chunks:
-        # 按下标排序，拼接
-        ordered = [chunks[i] for i in sorted(chunks.keys())]
+    # 优先级：带 name 的下标 chunk > 带 name 的单片 > 裸 value 顺序拼接 > 整段兜底
+
+    if indexed_chunks:
+        ordered = [indexed_chunks[i] for i in sorted(indexed_chunks.keys())]
         if len(ordered) == 1:
             return ordered[0]
         return SESS_CHUNK_SEPARATOR.join(ordered)
@@ -972,8 +1074,13 @@ def _parse_session_cookie_input(raw: str) -> str:
     if single_match:
         return single_match
 
-    # 都没匹配上——可能用户粘了裸 value 但里面带了 ; / =
-    # 此时保守处理：如果看起来像 JWE/base64 的长字符串（含 . 或 _），直接当单片
+    # 姿势 4：裸 value 用分号拼接的情况
+    if positional_chunks:
+        if len(positional_chunks) == 1:
+            return positional_chunks[0]
+        return SESS_CHUNK_SEPARATOR.join(positional_chunks)
+
+    # 兜底：整段看起来是合法 JWE（长，字符集对）
     if len(txt) >= 100 and re.match(r"^[A-Za-z0-9_\-\.=+/]+$", txt):
         return txt
 

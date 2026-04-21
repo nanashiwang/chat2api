@@ -234,3 +234,53 @@ def bulk_assign(tokens: List[str]) -> Dict[str, int]:
             skipped += 1
     logger.info(f"[antiban] bulk_assign result: assigned={assigned} skipped={skipped}")
     return {"assigned": assigned, "skipped": skipped}
+
+
+def resync_from_routing() -> Dict[str, int]:
+    """热同步：routing_config.json 改动后调用，重建桶索引并重新分配未绑定账号。
+
+    清除已不存在的代理对应的桶（保留桶历史 metadata 但标记为 dead）。
+    """
+    if not configs.enable_antiban:
+        return {"synced": 0}
+    _ensure_structure()
+
+    # 1. 从 routing 重新导入 bindings
+    _sync_from_routing()
+
+    # 2. 清理：routing 里已不存在的 proxy_url 对应的桶标记为 dead
+    routing = get_routing_config()
+    valid_proxy_urls = {p.get("proxy_url") for p in routing.get("proxies", []) if p.get("proxy_url")}
+    dead_count = 0
+    for bucket_id, bucket in globals.antiban_bucket["buckets"].items():
+        if bucket.get("proxy_url") not in valid_proxy_urls:
+            if bucket.get("status") != "dead":
+                bucket["status"] = "dead"
+                dead_count += 1
+
+    # 3. 清理孤儿 account_index（对应的桶已消失）
+    orphaned = [tk for tk, bid in globals.antiban_bucket["account_index"].items()
+                if bid not in globals.antiban_bucket["buckets"]]
+    for tk in orphaned:
+        globals.antiban_bucket["account_index"].pop(tk, None)
+
+    # 4. 已存在 token 但未在任何桶 → 尝试重新分配到 healthy 桶
+    reassigned = 0
+    for token in list(globals.token_list):
+        if not token:
+            continue
+        if globals.antiban_bucket["account_index"].get(token):
+            continue
+        if assign_account(token):
+            reassigned += 1
+
+    _persist()
+    logger.info(
+        f"[antiban] resync_from_routing: "
+        f"dead_buckets={dead_count}, orphaned={len(orphaned)}, reassigned={reassigned}"
+    )
+    return {
+        "dead_buckets": dead_count,
+        "orphaned": len(orphaned),
+        "reassigned": reassigned,
+    }

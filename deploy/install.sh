@@ -1,148 +1,232 @@
 #!/usr/bin/env bash
+# ============================================================
+# chat2api 一键部署脚本
+# ============================================================
+# 使用方式（新机器）：
+#   curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
+# 或下载后：
+#   bash install.sh
+#
+# 本脚本会：
+#   1. 自动安装 Docker（如缺）
+#   2. 生成随机 ADMIN_PASSWORD / AUTHORIZATION / API_PREFIX
+#   3. 下载 docker-compose 模板（不预设代理，代理请在 UI 里配）
+#   4. 启动服务并打印访问信息
+#
+# 自定义环境变量（可选，脚本启动前 export 即可）：
+#   INSTALL_DIR   安装目录（默认 $HOME/chat2api）
+#   CHAT2API_PORT 监听端口（默认 60403）
+#   GITHUB_RAW    仓库 raw URL（默认官方）
+#   INTERACTIVE   设为 1 进入交互模式（询问密码/前缀）
+# ============================================================
 set -euo pipefail
 
-DEFAULT_INSTALL_DIR="/opt/chat2api"
-DEFAULT_IMAGE="ghcr.io/nanashiwang/chat2api:latest"
-DEFAULT_PORT="60403"
-DEFAULT_API_PREFIX="nanapi-2026-a1"
-DEFAULT_GROUP_SIZE="25"
+# ----- 颜色 -----
+C_RESET="\033[0m"; C_INFO="\033[1;34m"; C_OK="\033[1;32m"
+C_WARN="\033[1;33m"; C_ERR="\033[1;31m"
+log()  { echo -e "${C_INFO}[*]${C_RESET} $*"; }
+ok()   { echo -e "${C_OK}[✓]${C_RESET} $*"; }
+warn() { echo -e "${C_WARN}[!]${C_RESET} $*"; }
+err()  { echo -e "${C_ERR}[✗]${C_RESET} $*" >&2; }
 
-command_exists() {
-  command -v "$1" >/dev/null 2>&1
-}
+# ----- 配置默认值 -----
+INSTALL_DIR="${INSTALL_DIR:-$HOME/chat2api}"
+GITHUB_RAW="${GITHUB_RAW:-https://raw.githubusercontent.com/nanashiwang/chat2api/main}"
+CHAT2API_PORT="${CHAT2API_PORT:-60403}"
+INTERACTIVE="${INTERACTIVE:-0}"
 
-prompt() {
-  local var_name="$1"
-  local prompt_text="$2"
-  local default_value="${3:-}"
-  local secret="${4:-false}"
-  local current_value=""
-  if [[ "$secret" == "true" ]]; then
-    read -r -s -p "$prompt_text [$default_value]: " current_value
-    echo
-  else
-    read -r -p "$prompt_text [$default_value]: " current_value
-  fi
-  if [[ -z "$current_value" ]]; then
-    current_value="$default_value"
-  fi
-  printf -v "$var_name" '%s' "$current_value"
-}
-
-yaml_escape() {
-  printf "%s" "$1" | sed "s/'/''/g"
-}
-
-ensure_docker() {
-  if command_exists docker && docker compose version >/dev/null 2>&1; then
-    return
-  fi
-
-  echo "Docker or docker compose plugin not found, installing..."
-  if ! command_exists curl; then
-    if command_exists apt-get; then
-      sudo apt-get update
-      sudo apt-get install -y curl
+# ----- sudo / root 判定 -----
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+else
+    if command -v sudo >/dev/null 2>&1; then
+        SUDO="sudo"
     else
-      echo "curl is required to install Docker automatically."
-      exit 1
+        err "需要 root 权限或安装 sudo"
+        exit 1
     fi
-  fi
+fi
 
-  curl -fsSL https://get.docker.com | sudo sh
-  sudo systemctl enable docker
-  sudo systemctl start docker
+# ----- 操作系统 -----
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS_ID="${ID,,}"
+    OS_NAME="${PRETTY_NAME:-$ID}"
+else
+    err "无法识别操作系统（缺 /etc/os-release）"
+    exit 1
+fi
+ok "操作系统: $OS_NAME"
+
+# ----- 架构 -----
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64|amd64)   ARCH_DOCKER="amd64" ;;
+    aarch64|arm64)  ARCH_DOCKER="arm64" ;;
+    *)              err "不支持的架构: $ARCH"; exit 1 ;;
+esac
+ok "架构: $ARCH_DOCKER"
+
+# ----- 依赖工具 -----
+command -v curl >/dev/null 2>&1 || {
+    log "安装 curl"
+    case "$OS_ID" in
+        ubuntu|debian) $SUDO apt-get update -qq && $SUDO apt-get install -y -qq curl ;;
+        centos|rhel|rocky|almalinux) $SUDO yum install -y -q curl ;;
+        *) err "请先安装 curl"; exit 1 ;;
+    esac
 }
 
-extract_first_proxy_url() {
-  local raw="$1"
-  local first="${raw%%,*}"
-  first="$(printf "%s" "$first" | xargs)"
-  if [[ "$first" == *"|"* ]]; then
-    first="${first#*|}"
-  fi
-  printf "%s" "$first"
-}
+# ----- 安装 Docker -----
+if command -v docker >/dev/null 2>&1; then
+    ok "Docker 已安装: $(docker --version | head -1)"
+else
+    log "Docker 未安装，使用官方脚本自动安装..."
+    curl -fsSL https://get.docker.com | $SUDO sh
+    $SUDO systemctl enable --now docker 2>/dev/null || true
+    ok "Docker 安装完成"
+fi
 
-echo "== Chat2API one-click installer =="
-prompt INSTALL_DIR "Install directory" "$DEFAULT_INSTALL_DIR"
-prompt IMAGE "Docker image" "$DEFAULT_IMAGE"
-prompt PORT "Host port" "$DEFAULT_PORT"
-prompt API_PREFIX "API prefix" "$DEFAULT_API_PREFIX"
-prompt AUTHORIZATION "API authorization token" "sk-your-api-key" "true"
-prompt ADMIN_PASSWORD "Admin password" "change-me-admin" "true"
-prompt INIT_TOKENS "Initial tokens (comma separated)" "rt-xxx1,rt-xxx2"
-prompt INIT_PROXIES "Initial proxies (comma separated, NAME|URL)" "IP-A|socks5://127.0.0.1:7890,IP-B|socks5://127.0.0.2:7890"
-prompt INIT_GROUP_SIZE "Initial group size" "$DEFAULT_GROUP_SIZE"
+# ----- docker compose 插件 -----
+if ! docker compose version >/dev/null 2>&1; then
+    log "安装 docker compose 插件"
+    case "$OS_ID" in
+        ubuntu|debian) $SUDO apt-get install -y -qq docker-compose-plugin ;;
+        centos|rhel|rocky|almalinux) $SUDO yum install -y -q docker-compose-plugin ;;
+        *) err "docker compose 插件不可用，请手动装"; exit 1 ;;
+    esac
+fi
+ok "docker compose 可用: $(docker compose version --short 2>/dev/null || echo installed)"
 
-FIRST_PROXY_URL="$(extract_first_proxy_url "$INIT_PROXIES")"
-prompt EXPORT_PROXY_URL "Export proxy URL" "$FIRST_PROXY_URL"
-
+# ----- 目录 -----
+log "安装目录: $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/data"
 cd "$INSTALL_DIR"
 
-cat > docker-compose.yml <<EOF
-services:
-  chat2api:
-    image: '$(yaml_escape "$IMAGE")'
-    container_name: chat2api
-    restart: unless-stopped
-    pull_policy: always
-    ports:
-      - '$(yaml_escape "$PORT"):5005'
-    volumes:
-      - ./data:/app/data
-    environment:
-      TZ: 'Asia/Shanghai'
-      API_PREFIX: '$(yaml_escape "$API_PREFIX")'
-      AUTHORIZATION: '$(yaml_escape "$AUTHORIZATION")'
-      ADMIN_PASSWORD: '$(yaml_escape "$ADMIN_PASSWORD")'
-      CHATGPT_BASE_URL: 'https://chatgpt.com'
-      PROXY_URL: '$(yaml_escape "$(printf "%s" "$INIT_PROXIES" | sed 's/[[:space:]]*,[[:space:]]*/,/g' | sed 's/[^|,]*|//g')")'
-      EXPORT_PROXY_URL: '$(yaml_escape "$EXPORT_PROXY_URL")'
-      HISTORY_DISABLED: 'true'
-      RETRY_TIMES: '3'
-      RANDOM_TOKEN: 'false'
-      SCHEDULED_REFRESH: 'false'
-      ENABLE_LIMIT: 'true'
-      CHECK_MODEL: 'false'
-      UPLOAD_BY_URL: 'false'
-      OAI_LANGUAGE: 'zh-CN'
-      ENABLE_GATEWAY: 'false'
-      AUTO_SEED: 'true'
-      FORCE_NO_HISTORY: 'false'
-      NO_SENTINEL: 'false'
-      INIT_TOKENS: '$(yaml_escape "$INIT_TOKENS")'
-      INIT_PROXIES: '$(yaml_escape "$INIT_PROXIES")'
-      INIT_GROUP_SIZE: '$(yaml_escape "$INIT_GROUP_SIZE")'
-      INIT_APPLY_ON_EMPTY: 'true'
-      INIT_FORCE: 'false'
-    healthcheck:
-      test: ["CMD-SHELL", "python3 - <<'PY'\\nimport urllib.request\\nurllib.request.urlopen('http://127.0.0.1:5005/$(yaml_escape "$API_PREFIX")/admin/login', timeout=5)\\nprint('ok')\\nPY"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+# ----- 随机凭据生成 -----
+gen_random() {
+    local length="${1:-32}"
+    LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$length" || true
+    echo
+}
+
+# ----- 下载 compose 模板 -----
+if [ -f docker-compose.yml ]; then
+    warn "docker-compose.yml 已存在，跳过下载"
+else
+    log "下载 docker-compose.yml 模板"
+    if ! curl -fsSL "$GITHUB_RAW/deploy/docker-compose.template.yml" -o docker-compose.yml; then
+        err "下载失败，请检查 GITHUB_RAW 变量或网络"
+        exit 1
+    fi
+    ok "模板下载完成"
+fi
+
+# ----- 生成或复用 .env -----
+if [ -f .env ]; then
+    warn ".env 已存在，沿用现有配置"
+    set +u; . ./.env; set -u
+else
+    log "生成随机凭据..."
+    if [ "$INTERACTIVE" = "1" ]; then
+        read -r -p "管理员密码 [留空自动生成 24 位]: " INPUT_ADMIN_PWD
+        ADMIN_PASSWORD="${INPUT_ADMIN_PWD:-$(gen_random 24)}"
+        read -r -p "API 密钥 [留空自动生成 sk-...]: " INPUT_AUTH
+        AUTHORIZATION="${INPUT_AUTH:-sk-$(gen_random 32)}"
+        read -r -p "API 路径前缀 [留空自动生成 api-...]: " INPUT_PREFIX
+        API_PREFIX="${INPUT_PREFIX:-api-$(gen_random 12)}"
+    else
+        ADMIN_PASSWORD="$(gen_random 24)"
+        AUTHORIZATION="sk-$(gen_random 32)"
+        API_PREFIX="api-$(gen_random 12)"
+    fi
+
+    cat > .env <<EOF
+# ============ chat2api 自动生成凭据 · 勿入 git ============
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+AUTHORIZATION=${AUTHORIZATION}
+API_PREFIX=${API_PREFIX}
+
+TZ=Asia/Shanghai
+CHAT2API_PORT=${CHAT2API_PORT}
+
+# ============ 可选安全加固 ============
+# 管理后台 IP 白名单（强烈建议配置，限制访问源）
+# ADMIN_IP_WHITELIST=1.2.3.4,10.0.0.0/8
+# ADMIN_TRUST_PROXY=true
+
+# ============ 代理（可选，优先在 UI 的"代理与路由"添加） ============
+# PROXY_URL=
+# EXPORT_PROXY_URL=
 EOF
+    chmod 600 .env
+    ok ".env 已生成，权限 600"
+fi
 
-ensure_docker
+# ----- 启动 -----
+log "拉取镜像并启动..."
+$SUDO docker compose pull -q 2>&1 | grep -v "^$" || true
+$SUDO docker compose up -d
 
-sudo mkdir -p /etc
-sudo tee /etc/chat2api.env >/dev/null <<EOF
-INSTALL_DIR='$(yaml_escape "$INSTALL_DIR")'
-PORT='$(yaml_escape "$PORT")'
-API_PREFIX='$(yaml_escape "$API_PREFIX")'
-IMAGE='$(yaml_escape "$IMAGE")'
+# ----- 健康检查 -----
+log "等待服务就绪..."
+for i in $(seq 1 60); do
+    if curl -fsS "http://127.0.0.1:${CHAT2API_PORT}/${API_PREFIX}/admin/login" > /dev/null 2>&1; then
+        ok "服务就绪（第 ${i} 秒）"
+        break
+    fi
+    if [ "$i" -eq 60 ]; then
+        warn "服务 60 秒内未响应，检查日志: cd $INSTALL_DIR && docker compose logs"
+    fi
+    sleep 1
+done
+
+# ----- 公网 IP 获取 -----
+PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || \
+             curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null || \
+             echo 'your-server-ip')"
+
+# ----- 结果摘要 -----
+cat <<EOF
+
+============================================================
+${C_OK}✅ chat2api 部署完成${C_RESET}
+============================================================
+
+📍 访问:
+   管理后台:  http://${PUBLIC_IP}:${CHAT2API_PORT}/${API_PREFIX}/admin/login
+   API:        http://${PUBLIC_IP}:${CHAT2API_PORT}/${API_PREFIX}/v1/chat/completions
+
+🔑 凭据（保存在 ${INSTALL_DIR}/.env · chmod 600）:
+   ADMIN_PASSWORD:  ${ADMIN_PASSWORD}
+   AUTHORIZATION:   ${AUTHORIZATION}
+   API_PREFIX:      ${API_PREFIX}
+
+📖 下一步:
+   1. 登录管理后台
+   2. "账号采集 Harvester" → 新增账号 → 🍪 粘贴 Cookie
+      （在本地浏览器登录 chatgpt.com，F12 Console 执行:
+       document.cookie.split(';').filter(x=>x.includes('session-token')).join('; ')
+       复制结果粘到 UI）
+   3. "代理与路由"（可选）→ 添加住宅代理 → 给账号绑定
+   4. 测试: curl -H "Authorization: Bearer ${AUTHORIZATION}" \\
+            http://localhost:${CHAT2API_PORT}/${API_PREFIX}/v1/models
+
+🛡️  安全加固（强烈建议）:
+   - 配置 IP 白名单:
+     vim ${INSTALL_DIR}/.env
+     ADMIN_IP_WHITELIST=你的办公/家庭 IP
+     docker compose restart
+   - 或接入 Cloudflare 免费版隐藏真实 IP
+   - 详见: ${GITHUB_RAW}/docs/SECURITY.md
+
+📋 常用命令:
+   cd ${INSTALL_DIR}
+   docker compose logs -f           # 实时日志
+   docker compose restart           # 重启
+   docker compose pull && docker compose up -d   # 升级
+   docker compose down              # 停止
+
+============================================================
+
 EOF
-
-SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-sudo install -m 0755 "$SCRIPT_SOURCE_DIR/chat2api.sh" /usr/local/bin/chat2api
-
-sudo docker compose pull
-sudo docker compose up -d
-
-echo
-echo "Deployment complete."
-echo "Admin login: http://<server-ip>:$PORT/$API_PREFIX/admin/login"
-echo "API endpoint: http://<server-ip>:$PORT/$API_PREFIX/v1/chat/completions"
-echo "Manage commands: chat2api status | chat2api logs | chat2api update"
