@@ -1773,25 +1773,29 @@
             </div>
 
             <div class="rounded-2xl bg-blue-50 border border-blue-200 p-4 text-sm text-slate-700 mb-4">
-                <div class="font-semibold mb-2">操作步骤</div>
+                <div class="font-semibold mb-2">操作步骤（推荐法：整段粘贴）</div>
                 <ol class="list-decimal ml-5 space-y-1">
-                    <li>在你的 Mac 浏览器登录 <b>https://chatgpt.com</b>（确保走代理能访问）</li>
-                    <li>登录成功后按 <b>F12</b> 打开开发者工具</li>
-                    <li>切到 <b>Application</b> 选项卡 → 左侧 <b>Cookies</b> → <b>https://chatgpt.com</b></li>
-                    <li>找到名为 <code>__Secure-next-auth.session-token</code> 的 cookie</li>
-                    <li>双击 <b>Value</b> 列，<b>右键 → Copy value</b>（注意不要复制成别的字段）</li>
-                    <li>粘贴到下方输入框，点 <b>[验证并导入]</b></li>
+                    <li>在你的 Mac 浏览器登录 <b>https://chatgpt.com</b>（走代理）</li>
+                    <li>F12 → <b>Console</b> → 输入 <code>document.cookie</code> 回车 → <b>右键 → Copy string contents</b></li>
+                    <li>粘贴到下方输入框，后端自动识别 <code>__Secure-next-auth.session-token.0 / .1 / .2</code> 全部分片</li>
+                    <li>点 <b>[验证并导入]</b></li>
                 </ol>
-                <div class="text-xs text-slate-500 mt-2">
-                    💡 Cookie 通常是一段很长的 base64 字符串（500+ 字符），类似 <code>eyJhbGciOi...</code> 或 <code>xxx..xxx.xxx.xxx</code>。
-                    寿命约几个月，后端会自动用它换短期 access_token 调用 OpenAI。
+                <div class="font-semibold mt-3 mb-1">或分段粘贴（繁琐但精确）</div>
+                <ol class="list-decimal ml-5 space-y-1 text-xs">
+                    <li>Application → Cookies → https://chatgpt.com</li>
+                    <li>找到 <code>__Secure-next-auth.session-token.0</code> 和 <code>.1</code>（甚至 .2）</li>
+                    <li>把它们<b>全部</b>按 <code>name.0=value0; name.1=value1</code> 格式拼接粘贴</li>
+                </ol>
+                <div class="text-xs text-slate-600 mt-2 p-2 bg-amber-50 border border-amber-200 rounded-lg">
+                    ⚠️ <b>必须带上所有 .N 分片</b>。NextAuth 的 JWE session token 超过 4KB 时被浏览器自动切成多段，
+                    只粘一段会导致解密失败，报错"session cookie 无效或过期"。
                 </div>
             </div>
 
             <div class="space-y-3">
                 <div>
-                    <label class="block text-sm text-slate-500 mb-1">Session Cookie 值</label>
-                    <textarea id="harvCookieInput" class="w-full min-h-32 p-3 rounded-xl border border-slate-200 font-mono text-xs" placeholder="粘贴 __Secure-next-auth.session-token 的 Value（通常以 eyJ... 或其他 base64 字符开头）"></textarea>
+                    <label class="block text-sm text-slate-500 mb-1">Cookie 字符串 / Session Token 值</label>
+                    <textarea id="harvCookieInput" class="w-full min-h-40 p-3 rounded-xl border border-slate-200 font-mono text-xs" placeholder="粘贴 document.cookie 的完整输出，或者所有 __Secure-next-auth.session-token.N=... 片段用分号连接"></textarea>
                 </div>
                 <div id="harvCookieInfo" class="text-xs text-slate-500">--</div>
                 <div id="harvCookieErrorBox" class="hidden rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700"></div>

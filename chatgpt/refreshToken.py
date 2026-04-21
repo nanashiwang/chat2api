@@ -107,6 +107,10 @@ async def sess2ac(session_token, force_refresh=False):
 async def fetch_session_access_token(session_cookie):
     """带 __Secure-next-auth.session-token cookie 访问 chatgpt.com/api/auth/session。
 
+    支持两种 storage_key 格式：
+      - 单片：sess-<cookie_value>
+      - 多片（JWE 超 4KB 被 NextAuth 分片）：sess-<chunk0>|||<chunk1>|||<chunk2>
+
     返回响应 JSON 中的 accessToken 字段（JWT，调 chatgpt.com/backend-api 的 Bearer）。
     """
     session_id = hashlib.md5(session_cookie.encode()).hexdigest()
@@ -119,9 +123,12 @@ async def fetch_session_access_token(session_cookie):
     refresh_meta["last_proxy"] = proxy_url or ""
     globals.refresh_map[storage_key] = refresh_meta
 
-    # 注意：chatgpt.com/api/auth/session 是 NextAuth 端点，需要浏览器风格 UA + Accept
+    # 按 NextAuth 协议组装 Cookie header
+    # 单片 → 一条 __Secure-next-auth.session-token=
+    # 多片 → 多条 __Secure-next-auth.session-token.0=xxx; .1=yyy; ...
+    cookie_header = _build_nextauth_cookie_header(session_cookie)
+
     client = Client(proxy=proxy_url, impersonate="chrome124")
-    cookie_key = "__Secure-next-auth.session-token"
     try:
         r = await client.get(
             "https://chatgpt.com/api/auth/session",
@@ -130,7 +137,7 @@ async def fetch_session_access_token(session_cookie):
                 "Accept-Language": "en-US,en;q=0.9",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                               "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Cookie": f"{cookie_key}={session_cookie}",
+                "Cookie": cookie_header,
             },
             timeout=15,
         )
@@ -138,7 +145,8 @@ async def fetch_session_access_token(session_cookie):
         content_type = r.headers.get("content-type", "")
         logger.info(
             f"[sess2ac] key={storage_key[:12]}... status={r.status_code} "
-            f"ctype={content_type} body_len={len(raw_text)} proxy={'yes' if proxy_url else 'no'}"
+            f"ctype={content_type} body_len={len(raw_text)} "
+            f"proxy={'yes' if proxy_url else 'no'} chunks={cookie_header.count('session-token')}"
         )
 
         if r.status_code != 200:
@@ -163,7 +171,8 @@ async def fetch_session_access_token(session_cookie):
                 globals.error_token_list.append(storage_key)
                 persist_error_tokens()
             raise Exception(
-                f"session cookie 无效或过期（response keys={list(payload.keys())}）"
+                f"session cookie 无效或过期（response keys={list(payload.keys())}）。"
+                f"提示：NextAuth session token 可能分片，请确保同时提供 .0 和 .1（若存在）"
             )
         return access_token
     except Exception as e:
@@ -182,6 +191,32 @@ async def fetch_session_access_token(session_cookie):
     finally:
         await client.close()
         del client
+
+
+# 分片分隔符（内部用，不可与 base64url 字符冲突）
+SESS_CHUNK_SEPARATOR = "|||"
+NEXTAUTH_COOKIE_NAME = "__Secure-next-auth.session-token"
+
+
+def _build_nextauth_cookie_header(session_cookie: str) -> str:
+    """根据存储的 session_cookie 字符串，构造发给 chatgpt.com 的 Cookie header。
+
+    Args:
+        session_cookie: 已去除 'sess-' 前缀的原始值。
+                        - 单片：直接是 cookie value
+                        - 多片：<chunk0>|||<chunk1>|||<chunk2>...
+
+    Returns:
+        Cookie header 字符串（NextAuth 规范分片格式）
+    """
+    if SESS_CHUNK_SEPARATOR in session_cookie:
+        chunks = session_cookie.split(SESS_CHUNK_SEPARATOR)
+        return "; ".join(
+            f"{NEXTAUTH_COOKIE_NAME}.{i}={chunk}"
+            for i, chunk in enumerate(chunks)
+            if chunk.strip()
+        )
+    return f"{NEXTAUTH_COOKIE_NAME}={session_cookie}"
 
 
 async def chat_refresh(refresh_token):

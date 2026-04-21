@@ -817,14 +817,16 @@ async def routing_admin_harvester_authorize_exchange(request: Request):
 
 
 async def routing_admin_harvester_import_cookie(request: Request):
-    """从浏览器粘贴的 __Secure-next-auth.session-token cookie 导入账号。
+    """从浏览器粘贴的 NextAuth session cookie 导入账号。
+
+    支持 3 种粘贴格式（自动识别）：
+      1. 单一 cookie value:           "eyJxxxxx..."
+      2. 完整 cookie 串（多片）:      "__Secure-next-auth.session-token.0=xxx; __Secure-next-auth.session-token.1=yyy"
+      3. 完整 document.cookie 字符串: "_ga=xxx; __Secure-next-auth.session-token.0=xxx; __Secure-next-auth.session-token.1=yyy; cf_clearance=xxx"
+
+    自动提取 `__Secure-next-auth.session-token.N` 的所有片段，按顺序拼接。
 
     前端传递 {email, session_token, note?, proxy_name?}。
-    后端会：
-      1. 加 'sess-' 前缀存到 token.txt
-      2. 立即调 sess2ac 验证 cookie 有效性
-      3. 通过已有 update_account_meta 绑定代理/备注
-      4. 通过 harvester_meta.report_harvest 更新看板
     """
     require_admin_auth(request)
     try:
@@ -833,30 +835,32 @@ async def routing_admin_harvester_import_cookie(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     email = (body.get("email") or "").strip()
-    session_token = (body.get("session_token") or "").strip()
+    raw_input = (body.get("session_token") or "").strip()
     note = (body.get("note") or "").strip()
     proxy_name = (body.get("proxy_name") or "").strip()
 
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="email 不合法")
-    if not session_token:
+    if not raw_input:
         raise HTTPException(status_code=400, detail="session_token 不能为空")
-    # 基础校验：cookie 通常是 base64url，极短不像真 token
-    if len(session_token) < 20:
-        raise HTTPException(status_code=400, detail="session_token 过短，不像有效 cookie")
-    # 去掉用户可能多复制的 cookie 名前缀
-    for prefix in (
-        "__Secure-next-auth.session-token=",
-        "__Host-next-auth.session-token=",
-        "next-auth.session-token=",
-    ):
-        if session_token.startswith(prefix):
-            session_token = session_token[len(prefix):]
 
-    storage_key = "sess-" + session_token
+    # ----- 智能解析分片 cookie -----
+    from chatgpt.refreshToken import SESS_CHUNK_SEPARATOR, sess2ac
+    session_cookie = _parse_session_cookie_input(raw_input)
+    if not session_cookie or len(session_cookie) < 20:
+        raise HTTPException(
+            status_code=400,
+            detail="未识别到有效的 session-token cookie。"
+                   "请从浏览器 F12 → Application → Cookies 复制整段 Cookie 字符串粘贴。",
+        )
 
-    # 先验证 cookie 是否真能换出 access_token（短路失败）
-    from chatgpt.refreshToken import sess2ac
+    storage_key = "sess-" + session_cookie
+    chunk_count = session_cookie.count(SESS_CHUNK_SEPARATOR) + 1 if SESS_CHUNK_SEPARATOR in session_cookie else 1
+    logger.info(
+        f"[harvester-cookie] parsed {chunk_count} chunk(s) for {email}"
+    )
+
+    # 验证 cookie 是否真能换出 access_token
     from utils import harvester_meta
     from utils.routing import get_routing_config, update_account_meta
 
@@ -891,7 +895,7 @@ async def routing_admin_harvester_import_cookie(request: Request):
             logger.warning(
                 f"[harvester-cookie] proxy_name='{proxy_name}' 未找到"
             )
-    final_note = email + (f" · {note}" if note else "")
+    final_note = f"{email} [chunks={chunk_count}]" + (f" · {note}" if note else "")
     update_account_meta(
         storage_key,
         note=final_note,
@@ -903,18 +907,77 @@ async def routing_admin_harvester_import_cookie(request: Request):
     # 更新看板
     harvester_meta.report_harvest(
         email=email,
-        rt_prefix=storage_key[:14],
+        rt_prefix=f"sess({chunk_count})...",
         success=True,
         imported_token=storage_key,
     )
 
-    logger.info(f"[harvester-cookie] ✓ {email} → access_token 已成功换出")
+    logger.info(f"[harvester-cookie] ✓ {email} → chunks={chunk_count}, access_token 已换出")
     return JSONResponse({
         "status": "success",
         "email": email,
         "token_type": "SessionToken",
+        "chunks": chunk_count,
         "access_token_preview": access_token[:16] + "...",
     })
+
+
+def _parse_session_cookie_input(raw: str) -> str:
+    """从用户粘贴的原始输入中提取 NextAuth session-token，按分片顺序拼接。
+
+    返回内部存储用的字符串：
+      - 单片：cookie 原值
+      - 多片：chunk0|||chunk1|||chunk2...
+    """
+    import re
+    from chatgpt.refreshToken import SESS_CHUNK_SEPARATOR
+
+    txt = raw.strip()
+    # 去掉可能的 "Cookie:" 前缀
+    if txt.lower().startswith("cookie:"):
+        txt = txt[7:].strip()
+
+    # 情况 1：整段看起来就是一个 cookie 值（没有分号、没有 =）
+    if "=" not in txt and ";" not in txt:
+        return txt
+
+    # 情况 2：解析 cookie 串，提取 __Secure-next-auth.session-token.N 所有片
+    # 支持格式: `name=value; name2=value2; __Secure-next-auth.session-token.0=xxx; ...`
+    chunks = {}  # {index: value}
+    single_match = None
+    # 按分号分段
+    for part in re.split(r";\s*", txt):
+        if not part or "=" not in part:
+            continue
+        key, _, value = part.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # 匹配 __Secure-next-auth.session-token.N 格式（分片）
+        m = re.match(r"^__Secure-next-auth\.session-token\.(\d+)$", key)
+        if m:
+            chunks[int(m.group(1))] = value
+            continue
+        # 匹配不带下标的（单片旧版或非标准格式）
+        if key in ("__Secure-next-auth.session-token", "__Host-next-auth.session-token",
+                   "next-auth.session-token"):
+            single_match = value
+
+    if chunks:
+        # 按下标排序，拼接
+        ordered = [chunks[i] for i in sorted(chunks.keys())]
+        if len(ordered) == 1:
+            return ordered[0]
+        return SESS_CHUNK_SEPARATOR.join(ordered)
+
+    if single_match:
+        return single_match
+
+    # 都没匹配上——可能用户粘了裸 value 但里面带了 ; / =
+    # 此时保守处理：如果看起来像 JWE/base64 的长字符串（含 . 或 _），直接当单片
+    if len(txt) >= 100 and re.match(r"^[A-Za-z0-9_\-\.=+/]+$", txt):
+        return txt
+
+    return ""
 
 
 async def _exchange_code_for_tokens(code: str, sess) -> dict:
