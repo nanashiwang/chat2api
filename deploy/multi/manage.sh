@@ -52,6 +52,12 @@ cmd_apply() {
     fi
     log "应用 docker compose..."
     dc up -d --remove-orphans
+    # nginx.conf 变化时 compose 不会重启 nginx，主动 reload
+    if docker ps --format '{{.Names}}' | grep -qx c2a-nginx; then
+        docker exec c2a-nginx nginx -s reload 2>/dev/null \
+            && log "nginx reload OK" \
+            || log "nginx reload 失败（首次启动可忽略）"
+    fi
     ok "完成。运行 ./manage.sh secrets 查看凭证 / 编排面板访问入口"
 }
 

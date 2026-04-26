@@ -125,7 +125,8 @@ def inspect(container: str) -> dict | None:
 
 
 def regenerate_and_apply() -> None:
-    """写 csv 后必须调用：先 generate.py，再 docker compose up -d --remove-orphans。"""
+    """写 csv 后必须调用：先 generate.py，再 docker compose up -d --remove-orphans，
+    再 nginx -s reload（compose 不会因 nginx.conf 改动重启 nginx）。"""
     rc, out, err = run(
         ["python3", str(WORK / "generate.py")], timeout=30
     )
@@ -137,6 +138,13 @@ def regenerate_and_apply() -> None:
     if rc != 0:
         logger.error("compose up 失败：rc=%s err=%s", rc, err)
         raise DockerError(f"docker compose 失败：{(err or out)[:300]}")
+
+    # nginx.conf 变化必须 reload，不然新 location 不生效
+    rc, out, err = run(
+        ["docker", "exec", "c2a-nginx", "nginx", "-s", "reload"], timeout=10
+    )
+    if rc != 0:
+        logger.warning("nginx reload 失败（非致命）：%s", (err or out)[:200])
 
 
 # ---------- 工具：CSV / env / secrets ----------
