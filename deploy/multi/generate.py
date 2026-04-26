@@ -358,6 +358,13 @@ NGINX_LOCATION = """\
             sub_filter_types text/html text/css application/javascript application/json;
         }}
 
+        # 反向兜底：chat2api 前端 JS 在运行时动态拼接 /{api_prefix}/...，
+        # sub_filter 只改静态字符串改不到。用 location regex 把这种请求
+        # 内部 rewrite 回 /{slug}/...，避免 404。
+        location ~ ^/{api_prefix}/(.*)$ {{
+            rewrite ^/{api_prefix}/(.*)$ /{slug}/$1 last;
+        }}
+
 """
 
 NGINX_FOOTER = """\
