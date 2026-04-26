@@ -216,7 +216,8 @@ COMPOSE_INSTANCE = """\
     volumes:
       - ./data/{slug}:/app/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5005/$$API_PREFIX/admin/login > /dev/null || exit 1"]
+      # 镜像不含 curl，用 python TCP 探活 5005 端口（最简存活检查）
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(3); s.connect(('127.0.0.1',5005)); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 3
