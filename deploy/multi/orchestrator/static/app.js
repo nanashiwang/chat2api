@@ -19,9 +19,9 @@ async function api(method, path, body) {
         opts.headers['Content-Type'] = 'application/json';
         opts.body = JSON.stringify(body);
     }
-    if (method !== 'GET') {
-        opts.headers['X-CSRF-Token'] = csrf();
-    }
+    // 所有请求都带 CSRF 头：少数 GET（如 /api/secrets/{slug} reveal）也走 CSRF 校验
+    const c = csrf();
+    if (c) opts.headers['X-CSRF-Token'] = c;
     const r = await fetch('.' + path, opts);
     if (r.status === 401) {
         location.href = './login';
