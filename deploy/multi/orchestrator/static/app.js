@@ -213,16 +213,25 @@ async function showSecret(slug) {
     if (!confirm(`查看 ${slug} 的明文凭证？\n该操作会写入审计日志。`)) return;
     try {
         const d = await api('GET', '/api/secrets/' + encodeURIComponent(slug));
+        const origin = location.origin;   // e.g. http://107.172.96.31:60403
+        const adminUrl = `${origin}/${d.slug}/admin/login`;
+        const apiUrl   = `${origin}/${d.slug}/v1/chat/completions`;
         $('#secret-body').innerHTML = `
+            <div class="text-xs text-gray-500 mb-2">仅展示用户侧需要的凭证；后端 API_PREFIX 由 nginx 自动改写，不应直接访问。</div>
             <div><span class="font-semibold">slug:</span> <code class="bg-gray-100 px-1">${escapeHtml(d.slug)}</code></div>
             <div><span class="font-semibold">AUTHORIZATION:</span> <code class="bg-gray-100 px-1 break-all">${escapeHtml(d.AUTHORIZATION)}</code></div>
             <div><span class="font-semibold">ADMIN_PASSWORD:</span> <code class="bg-gray-100 px-1 break-all">${escapeHtml(d.ADMIN_PASSWORD)}</code></div>
-            <div><span class="font-semibold">API_PREFIX:</span> <code class="bg-gray-100 px-1">${escapeHtml(d.API_PREFIX)}</code></div>
             <div><span class="font-semibold">PROXY_URL:</span> <code class="bg-gray-100 px-1 break-all">${escapeHtml(d.PROXY_URL || '(无)')}</code></div>
-            <div class="pt-3 mt-3 border-t text-xs text-gray-500">
-                调用示例：<br>
-                <code class="bg-gray-100 px-1 mt-1 inline-block break-all">curl http://&lt;vps&gt;:60403/${escapeHtml(d.slug)}/v1/chat/completions -H "Authorization: Bearer ${escapeHtml(d.AUTHORIZATION)}"</code><br>
-                Admin 后台：<a class="text-blue-600 underline" href="../${escapeHtml(d.slug)}/admin/login" target="_blank">/${escapeHtml(d.slug)}/admin/login</a>
+            <div class="pt-3 mt-3 border-t space-y-2">
+                <div>
+                    <div class="text-xs text-gray-500 mb-1">① Admin 后台（粘 cookie 用）</div>
+                    <a class="text-blue-600 underline break-all" href="${escapeHtml(adminUrl)}" target="_blank" rel="noopener">${escapeHtml(adminUrl)}</a>
+                    <div class="text-xs text-gray-400">用上面 ADMIN_PASSWORD 登录</div>
+                </div>
+                <div>
+                    <div class="text-xs text-gray-500 mb-1">② API 调用示例</div>
+                    <code class="bg-gray-100 px-1 block break-all text-xs">curl ${escapeHtml(apiUrl)} -H "Authorization: Bearer ${escapeHtml(d.AUTHORIZATION)}" -H "Content-Type: application/json" -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'</code>
+                </div>
             </div>
         `;
         $('#modal-secret').classList.remove('hidden');
