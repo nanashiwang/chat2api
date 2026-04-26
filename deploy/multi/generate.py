@@ -212,9 +212,9 @@ COMPOSE_INSTANCE = """\
     <<: *c2a-common
     container_name: c2a-{slug}
     env_file:
-      - ./env/{slug}.env
+      - ./generated/env/{slug}.env
     volumes:
-      - ../data/{slug}:/app/data
+      - ./data/{slug}:/app/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5005/$$API_PREFIX/admin/login > /dev/null || exit 1"]
       interval: 30s
@@ -228,18 +228,18 @@ COMPOSE_ORCHESTRATOR = """\
   orchestrator:
     image: c2a-orchestrator:local
     build:
-      context: ../orchestrator
+      context: ./orchestrator
     container_name: c2a-orchestrator
     restart: unless-stopped
     networks: [c2a-net]
     env_file:
-      - ./orch.env
+      - ./generated/orch.env
     environment:
       MULTI_HOST_PATH: '${MULTI_HOST_PATH}'
       ORCH_PORT: '8080'
       TZ: 'Asia/Shanghai'
     volumes:
-      - ../:/work
+      - ./:/work
       - /var/run/docker.sock:/var/run/docker.sock
     labels:
       com.centurylinklabs.watchtower.enable: 'true'
@@ -254,7 +254,7 @@ COMPOSE_FOOTER = """\
     ports:
       - '{port}:80'
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./generated/nginx.conf:/etc/nginx/nginx.conf:ro
     networks: [c2a-net]
     depends_on:
 {depends_on}

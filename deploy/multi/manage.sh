@@ -39,7 +39,7 @@ require_compose() {
 }
 
 dc() {
-    docker compose -f "$COMPOSE" "$@"
+    docker compose -f "$COMPOSE" --project-directory "$DIR" "$@"
 }
 
 cmd_apply() {
@@ -143,16 +143,19 @@ cmd_orch_password() {
         exit 1
     fi
     local new_pwd
-    new_pwd=$(python3 -c 'import secrets,string; print("".join(secrets.choice(string.ascii_letters+string.digits) for _ in range(24)))')
-    # 跨平台 sed -i：写到 tmp 再 mv
+    if [ -n "${1:-}" ]; then
+        new_pwd="$1"
+    else
+        new_pwd=$(python3 -c 'import secrets,string; print("".join(secrets.choice(string.ascii_letters+string.digits) for _ in range(24)))')
+    fi
     awk -v new="$new_pwd" '/^ORCH_PASSWORD=/{print "ORCH_PASSWORD="new; next} {print}' \
         "$GEN_DIR/orch.env" > "$GEN_DIR/orch.env.tmp"
     mv "$GEN_DIR/orch.env.tmp" "$GEN_DIR/orch.env"
     chmod 600 "$GEN_DIR/orch.env"
-    log "已更新 ORCH_PASSWORD，重启 orchestrator..."
-    dc restart orchestrator
+    log "已写入新 ORCH_PASSWORD，强制重建 orchestrator（让 env_file 重新加载）..."
+    dc up -d --force-recreate orchestrator
     ok "新密码：$new_pwd"
-    log "旧 cookie 已自动失效（SESSION_SECRET 未变，但密码变了），需重新登录"
+    log "提示：HMAC SESSION_SECRET 未变，旧 cookie 仍有效到 8h 过期；如需立刻全部失效，编辑 orch.env 改 ORCH_SESSION_SECRET 后再次重建"
 }
 
 cmd_down() {
@@ -192,7 +195,7 @@ chat2api 多实例运维（一容器一账号）
   ./manage.sh logs <slug> [N]               跟随该实例日志（默认 200 行）
   ./manage.sh shell <slug>                  进入该实例容器 shell
   ./manage.sh secrets                       打印所有 AUTH / ADMIN_PWD（敏感）
-  ./manage.sh orch-password                 重置编排面板密码并重启 orchestrator
+  ./manage.sh orch-password [pwd]           重置编排面板密码（不传则随机生成）
   ./manage.sh down                          停止全部（数据保留）
   ./manage.sh help                          显示本帮助
 
