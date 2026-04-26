@@ -1,0 +1,14 @@
+/* 极简补丁，绝大多数样式由 Tailwind CDN 提供 */
+.row-action-btn {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    border-radius: 0.25rem;
+    margin-right: 0.25rem;
+}
+.row-action-btn:hover { background: #f3f4f6; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot-healthy { background: #10b981; }
+.dot-unhealthy { background: #ef4444; }
+.dot-starting { background: #f59e0b; }
+.dot-na { background: #9ca3af; }
+.kbd-row { font-family: ui-monospace, SFMono-Regular, monospace; }
