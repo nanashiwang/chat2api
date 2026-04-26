@@ -42,6 +42,9 @@ NGINX_PORT = int(os.environ.get("CHAT2API_GATEWAY_PORT", "60403"))
 CHAT2API_IMAGE = os.environ.get(
     "CHAT2API_IMAGE", "ghcr.io/nanashiwang/chat2api:latest"
 )
+WATCHTOWER_IMAGE = os.environ.get(
+    "WATCHTOWER_IMAGE", "nickfedor/watchtower:latest"
+)
 ORCH_ENABLED = os.environ.get("ORCH_ENABLED", "true").lower() != "false"
 
 
@@ -257,7 +260,7 @@ COMPOSE_FOOTER = """\
 {depends_on}
 
   watchtower:
-    image: containrrr/watchtower
+    image: {watchtower_image}
     container_name: c2a-watchtower
     restart: unless-stopped
     volumes:
@@ -279,7 +282,7 @@ def render_compose(accounts: list[Account]) -> str:
     body = COMPOSE_HEADER.format(image=CHAT2API_IMAGE) + services
     if ORCH_ENABLED:
         body += COMPOSE_ORCHESTRATOR
-    body += COMPOSE_FOOTER.format(port=NGINX_PORT, depends_on=depends_on)
+    body += COMPOSE_FOOTER.format(port=NGINX_PORT, depends_on=depends_on, watchtower_image=WATCHTOWER_IMAGE)
     return body
 
 
