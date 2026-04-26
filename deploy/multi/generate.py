@@ -238,9 +238,12 @@ COMPOSE_ORCHESTRATOR = """\
       MULTI_HOST_PATH: '${MULTI_HOST_PATH}'
       ORCH_PORT: '8080'
       TZ: 'Asia/Shanghai'
+    # 关键：用宿主路径作为容器内挂载点，让 docker compose 客户端
+    # （在容器内运行）与 daemon（在宿主运行）能用同一路径找到 env_file 与 volumes
     volumes:
-      - ./:/work
+      - '${MULTI_HOST_PATH}:${MULTI_HOST_PATH}'
       - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: '${MULTI_HOST_PATH}'
     labels:
       com.centurylinklabs.watchtower.enable: 'true'
 

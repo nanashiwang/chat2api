@@ -44,9 +44,13 @@ from pydantic import BaseModel, Field, field_validator
 
 # ---------- 配置 ----------
 
-WORK = Path("/work")
-HOST_PATH = os.environ.get("MULTI_HOST_PATH") or str(WORK)
-COMPOSE_FILE_C = WORK / "generated" / "docker-compose.yml"   # 容器内路径（读文件）
+# WORK 目录策略：让容器内 WORK 路径 = 宿主 deploy/multi 绝对路径，
+# 因为 docker compose 客户端（在容器内）发命令前会先解析 env_file 并检查存在性，
+# 必须用容器内能访问的路径；而 daemon（在宿主）解析 volumes 用宿主路径。
+# 通过 compose volume `${MULTI_HOST_PATH}:${MULTI_HOST_PATH}` 让两者重合。
+HOST_PATH = (os.environ.get("MULTI_HOST_PATH") or "/work").rstrip("/")
+WORK = Path(HOST_PATH)
+COMPOSE_FILE_C = WORK / "generated" / "docker-compose.yml"
 ACCOUNTS_CSV = WORK / "accounts.csv"
 SECRETS_FILE = WORK / "generated" / "secrets.txt"
 ORCH_ENV = WORK / "generated" / "orch.env"
