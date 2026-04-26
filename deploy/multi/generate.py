@@ -243,7 +243,6 @@ COMPOSE_ORCHESTRATOR = """\
     volumes:
       - '${MULTI_HOST_PATH}:${MULTI_HOST_PATH}'
       - /var/run/docker.sock:/var/run/docker.sock
-    working_dir: '${MULTI_HOST_PATH}'
     labels:
       com.centurylinklabs.watchtower.enable: 'true'
 
