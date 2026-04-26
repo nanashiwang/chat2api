@@ -348,7 +348,8 @@ NGINX_LOCATION = """\
             proxy_pass http://c2a-{slug}:5005/{api_prefix}/;
             # chat2api 内部硬编码 API_PREFIX 到 redirect / cookie / HTML 链接里，
             # 经 nginx 反代后必须把 /{api_prefix}/ 改回 /{slug}/，否则用户登录后跳转 404
-            proxy_redirect ~^/{api_prefix}/(.*)$ /{slug}/$1;
+            # 用 $scheme://$http_host 拼完整 URL（含客户端原始端口如 :60403）
+            proxy_redirect ~^/{api_prefix}/(.*)$ $scheme://$http_host/{slug}/$1;
             proxy_cookie_path /{api_prefix} /{slug};
             # sub_filter 改写响应体内的硬编码链接（CSS/JS/HTML）；强制无 gzip 才能改
             proxy_set_header Accept-Encoding "";
