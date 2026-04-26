@@ -359,10 +359,11 @@ NGINX_LOCATION = """\
         }}
 
         # 反向兜底：chat2api 前端 JS 在运行时动态拼接 /{api_prefix}/...，
-        # sub_filter 只改静态字符串改不到。用 location regex 把这种请求
-        # 内部 rewrite 回 /{slug}/...，避免 404。
+        # sub_filter 只改静态字符串改不到。用 307 让浏览器跳到 /{slug}/...
+        # （而非 internal rewrite），保证浏览器按新 URL 的 cookie path 发送 admin_auth。
+        # 307 保留 method/body，POST/PATCH 不会变 GET。
         location ~ ^/{api_prefix}/(.*)$ {{
-            rewrite ^/{api_prefix}/(.*)$ /{slug}/$1 last;
+            return 307 $scheme://$http_host/{slug}/$1$is_args$args;
         }}
 
 """
