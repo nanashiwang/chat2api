@@ -22,7 +22,7 @@
 curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
 ```
 
-脚本自动：装 Docker → 下载 compose → 生成随机 ADMIN/API 密钥 → 启动 → 打印访问地址。
+脚本自动：装 Docker → 下载 compose → 生成随机 ADMIN/API 密钥 → 启动 → 安装 `chat2api` 管理命令 → 打印访问地址。
 
 ### 新增能力一览
 
@@ -51,7 +51,9 @@ curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/in
        ↓
 6. 开始使用 /v1/chat/completions
        ↓
-7. Cookie 过期 (数月后) → 重抓并替换
+7. 日常升级 → `chat2api update`
+       ↓
+8. Cookie 过期 (数月后) → 重抓并替换
 ```
 
 ### Cookie 抓取快速链接
@@ -243,26 +245,24 @@ wget https://raw.githubusercontent.com/LanQian528/chat2api/main/docker-compose-w
 docker-compose up -d
 ```
 
-如果你是手动用 Docker Compose 部署的，默认不会自动安装宿主管理命令 `chat2api`，所以直接执行 `chat2api update` 会提示 `command not found`。  
-这种情况下有两种方式更新：
-
-```bash
-docker compose pull && docker compose up -d
-```
-
-或者先安装管理命令：
-
-```bash
-cd chat2api
-bash deploy/install-command.sh
-```
-
-安装后即可使用：
+本分支的一键部署脚本会自动安装宿主管理命令，部署完成后可直接使用：
 
 ```bash
 chat2api status
 chat2api update
 chat2api logs
+```
+
+旧机器如果曾经手动部署，重新跑一键部署脚本即可沿用现有配置并补装命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
+```
+
+如果安装目录不是默认的 `~/chat2api`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | INSTALL_DIR=/你的/chat2api/目录 bash
 ```
 
 

@@ -34,6 +34,7 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/chat2api}"
 GITHUB_RAW="${GITHUB_RAW:-https://raw.githubusercontent.com/nanashiwang/chat2api/main}"
 CHAT2API_PORT="${CHAT2API_PORT:-60403}"
 INTERACTIVE="${INTERACTIVE:-0}"
+SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
 # ----- sudo / root 判定 -----
 if [ "$(id -u)" -eq 0 ]; then
@@ -110,6 +111,41 @@ gen_random() {
     echo
 }
 
+shell_escape() {
+    printf "%s" "$1" | sed "s/'/'\\\\''/g"
+}
+
+install_manage_command() {
+    local script_src tmp_script
+
+    script_src="${SCRIPT_SOURCE_DIR}/chat2api.sh"
+
+    $SUDO mkdir -p /etc || return 1
+    if ! $SUDO tee /etc/chat2api.env >/dev/null <<EOF
+INSTALL_DIR='$(shell_escape "$INSTALL_DIR")'
+PORT='$(shell_escape "$CHAT2API_PORT")'
+API_PREFIX='$(shell_escape "$API_PREFIX")'
+EOF
+    then
+        return 1
+    fi
+
+    if [ -f "$script_src" ]; then
+        $SUDO install -m 0755 "$script_src" /usr/local/bin/chat2api || return 1
+    else
+        tmp_script="$(mktemp)" || return 1
+        curl -fsSL "$GITHUB_RAW/deploy/chat2api.sh" -o "$tmp_script" || {
+            rm -f "$tmp_script"
+            return 1
+        }
+        $SUDO install -m 0755 "$tmp_script" /usr/local/bin/chat2api || {
+            rm -f "$tmp_script"
+            return 1
+        }
+        rm -f "$tmp_script"
+    fi
+}
+
 # ----- 下载 compose 模板 -----
 if [ -f docker-compose.yml ]; then
     warn "docker-compose.yml 已存在，跳过下载"
@@ -168,6 +204,14 @@ log "拉取镜像并启动..."
 $SUDO docker compose pull -q 2>&1 | grep -v "^$" || true
 $SUDO docker compose up -d
 
+# ----- 宿主管理命令 -----
+log "安装管理命令..."
+if install_manage_command; then
+    ok "管理命令已安装: chat2api update"
+else
+    warn "管理命令安装失败；服务已启动，可先用 docker compose pull && docker compose up -d 更新"
+fi
+
 # ----- 健康检查 -----
 log "等待服务就绪..."
 for i in $(seq 1 60); do
@@ -216,16 +260,16 @@ ${C_OK}✅ chat2api 部署完成${C_RESET}
    - 配置 IP 白名单:
      vim ${INSTALL_DIR}/.env
      ADMIN_IP_WHITELIST=你的办公/家庭 IP
-     docker compose restart
+     chat2api restart
    - 或接入 Cloudflare 免费版隐藏真实 IP
    - 详见: ${GITHUB_RAW}/docs/SECURITY.md
 
 📋 常用命令:
-   cd ${INSTALL_DIR}
-   docker compose logs -f           # 实时日志
-   docker compose restart           # 重启
-   docker compose pull && docker compose up -d   # 升级
-   docker compose down              # 停止
+   chat2api status                  # 查看状态
+   chat2api logs                    # 实时日志
+   chat2api restart                 # 重启
+   chat2api update                  # 升级
+   chat2api stop                    # 停止
 
 ============================================================
 

@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_INSTALL_DIR="/opt/chat2api"
+DEFAULT_INSTALL_DIR="${INSTALL_DIR:-$HOME/chat2api}"
 DEFAULT_PORT="60403"
 DEFAULT_API_PREFIX="nanapi-2026-a1"
+
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+elif command -v sudo >/dev/null 2>&1; then
+  SUDO="sudo"
+else
+  echo "需要 root 权限或安装 sudo"
+  exit 1
+fi
 
 prompt() {
   local var_name="$1"
@@ -17,8 +26,8 @@ prompt() {
   printf -v "$var_name" '%s' "$current_value"
 }
 
-yaml_escape() {
-  printf "%s" "$1" | sed "s/'/''/g"
+shell_escape() {
+  printf "%s" "$1" | sed "s/'/'\\\\''/g"
 }
 
 echo "== Install chat2api manage command =="
@@ -32,14 +41,14 @@ if [[ ! -f "$INSTALL_DIR/docker-compose.yml" && ! -f "$INSTALL_DIR/compose.yml" 
 fi
 
 SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-sudo mkdir -p /etc
-sudo tee /etc/chat2api.env >/dev/null <<EOF
-INSTALL_DIR='$(yaml_escape "$INSTALL_DIR")'
-PORT='$(yaml_escape "$PORT")'
-API_PREFIX='$(yaml_escape "$API_PREFIX")'
+$SUDO mkdir -p /etc
+$SUDO tee /etc/chat2api.env >/dev/null <<EOF
+INSTALL_DIR='$(shell_escape "$INSTALL_DIR")'
+PORT='$(shell_escape "$PORT")'
+API_PREFIX='$(shell_escape "$API_PREFIX")'
 EOF
 
-sudo install -m 0755 "$SCRIPT_SOURCE_DIR/chat2api.sh" /usr/local/bin/chat2api
+$SUDO install -m 0755 "$SCRIPT_SOURCE_DIR/chat2api.sh" /usr/local/bin/chat2api
 
 echo
 echo "Installed."

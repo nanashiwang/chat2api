@@ -261,8 +261,9 @@ INSTALL_DIR=/opt/chat2api bash install.sh
    - `API_PREFIX`：`api-` + 12 位
 5. 写入 `.env`（chmod 600）
 6. `docker compose up -d`
-7. 等待健康检查通过
-8. 打印访问 URL + 凭据 + 下一步操作指引
+7. 自动安装宿主管理命令 `chat2api`
+8. 等待健康检查通过
+9. 打印访问 URL + 凭据 + 下一步操作指引
 
 ### 凭据安全
 
@@ -273,9 +274,10 @@ INSTALL_DIR=/opt/chat2api bash install.sh
 ### 升级
 
 ```bash
-cd ~/chat2api
-docker compose pull && docker compose up -d
+chat2api update
 ```
+
+旧机器没有该命令时，重新跑一键部署脚本会沿用现有配置并补装。
 
 ---
 
