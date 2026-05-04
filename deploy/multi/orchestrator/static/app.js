@@ -28,8 +28,24 @@ async function api(method, path, body) {
         return;
     }
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+    if (!r.ok) throw new Error(formatApiError(data.detail) || `HTTP ${r.status}`);
     return data;
+}
+
+function formatApiError(detail) {
+    if (!detail) return '';
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+        return detail.map((item) => {
+            if (typeof item === 'string') return item;
+            const loc = Array.isArray(item.loc) ? item.loc.join('.') : '';
+            return [loc, item.msg].filter(Boolean).join(': ');
+        }).join('\n');
+    }
+    if (typeof detail === 'object') {
+        return detail.message || detail.msg || JSON.stringify(detail);
+    }
+    return String(detail);
 }
 
 function toast(msg, isErr = false) {
