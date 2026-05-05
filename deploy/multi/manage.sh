@@ -42,10 +42,22 @@ dc() {
     docker compose -f "$COMPOSE" --project-directory "$DIR" "$@"
 }
 
+cleanup_renamed_containers() {
+    local ids
+    ids="$(docker ps -a --format '{{.ID}} {{.Names}}' \
+        | awk '$2 ~ /^[0-9a-f]+_c2a-/ {print $1}')"
+    if [ -n "$ids" ]; then
+        log "清理上次重建残留容器..."
+        # shellcheck disable=SC2086
+        docker rm -f $ids >/dev/null 2>&1 || true
+    fi
+}
+
 cmd_apply() {
     ensure_csv
     log "生成配置..."
     python3 "$DIR/generate.py"
+    cleanup_renamed_containers
     if dc config --services 2>/dev/null | grep -qx orchestrator; then
         log "构建 orchestrator 镜像..."
         dc build orchestrator
