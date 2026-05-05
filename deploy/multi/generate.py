@@ -186,7 +186,7 @@ x-chat2api-common: &c2a-common
     SCHEDULED_REFRESH: 'true'
     ENABLE_LIMIT: 'true'
     OAI_LANGUAGE: 'zh-CN'
-    ENABLE_GATEWAY: 'false'
+    ENABLE_GATEWAY: 'true'
     AUTO_SEED: 'true'
     RANDOM_TOKEN: 'false'
     RETRY_TIMES: '3'
