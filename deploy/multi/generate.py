@@ -236,13 +236,13 @@ COMPOSE_ORCHESTRATOR = """\
     env_file:
       - ./generated/orch.env
     environment:
-      MULTI_HOST_PATH: '${MULTI_HOST_PATH}'
+      MULTI_HOST_PATH: '{host_path}'
       ORCH_PORT: '8080'
       TZ: 'Asia/Shanghai'
     # 关键：用宿主路径作为容器内挂载点，让 docker compose 客户端
     # （在容器内运行）与 daemon（在宿主运行）能用同一路径找到 env_file 与 volumes
     volumes:
-      - '${MULTI_HOST_PATH}:${MULTI_HOST_PATH}'
+      - '{host_path}:{host_path}'
       - /var/run/docker.sock:/var/run/docker.sock
     labels:
       com.centurylinklabs.watchtower.enable: 'true'
@@ -284,7 +284,7 @@ def render_compose(accounts: list[Account]) -> str:
     depends_on = "\n".join(depends_on_lines)
     body = COMPOSE_HEADER.format(image=CHAT2API_IMAGE) + services
     if ORCH_ENABLED:
-        body += COMPOSE_ORCHESTRATOR
+        body += COMPOSE_ORCHESTRATOR.format(host_path=str(ROOT).replace("'", "''"))
     body += COMPOSE_FOOTER.format(port=NGINX_PORT, depends_on=depends_on, watchtower_image=WATCHTOWER_IMAGE)
     return body
 
