@@ -677,10 +677,18 @@ if no_sentinel:
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE"])
 async def reverse_proxy(request: Request, path: str):
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    normalized_path = "/" + path.lstrip("/")
     if len(token) != 45 and not token.startswith("eyJhbGciOi"):
         for banned_path in banned_paths:
             if re.match(banned_path, path):
                 raise HTTPException(status_code=403, detail="Forbidden")
+
+    # 如果后台路径没有命中显式 admin 路由，说明 nginx / API_PREFIX 映射大概率错了。
+    if "/admin/" in normalized_path or normalized_path.endswith("/admin"):
+        raise HTTPException(
+            status_code=404,
+            detail="Admin route mismatch: check API_PREFIX and nginx slug mapping.",
+        )
 
     for chatgpt_path in chatgpt_paths:
         if re.match(chatgpt_path, path):

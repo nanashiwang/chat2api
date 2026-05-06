@@ -346,6 +346,10 @@ NGINX_LOCATION = """\
         # ---- {slug} ({note}) ----
         location /{slug}/ {{
             proxy_pass http://c2a-{slug}:5005/{api_prefix}/;
+            # 把外部访问域名/协议传给 chat2api，避免页面里出现容器内网地址
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
             # chat2api 内部硬编码 API_PREFIX 到 redirect / cookie / HTML 链接里，
             # 经 nginx 反代后必须把 /{api_prefix}/ 改回 /{slug}/，否则用户登录后跳转 404
             # 用 $scheme://$http_host 拼完整 URL（含客户端原始端口如 :60403）
