@@ -138,6 +138,19 @@ circuit_403_cooldown = int(os.getenv('CIRCUIT_403_COOLDOWN', 3600))
 circuit_dead_account_recheck_hours = int(os.getenv('CIRCUIT_DEAD_ACCOUNT_RECHECK_HOURS', 24))
 circuit_bucket_heal_minutes = int(os.getenv('CIRCUIT_BUCKET_HEAL_MINUTES', 30))
 
+# ========================= Session Sticky (LibreChat 会话粘性) =========================
+# 用于 LibreChat → New-API → chat2api 链路；将 LibreChat 端 conversationId
+# 翻译为 ChatGPT 服务端 conversation_id，实现窗口级会话连续。默认关闭。
+enable_session_sticky = is_true(os.getenv('ENABLE_SESSION_STICKY', False))
+# SQLite 文件路径（默认在 data 卷内，跟随实例数据；与 utils/globals.DATA_FOLDER 保持一致）
+session_db_path = os.getenv('SESSION_DB_PATH', os.path.join('data', 'sessions.db'))
+# 多少天未更新的映射会被清理（cleanup_expired 调用时生效）
+session_ttl_days = int(os.getenv('SESSION_TTL_DAYS', 30))
+# request body 中携带 LibreChat conversationId 的字段名（默认与 librechat.yaml addParams 对齐）
+session_lc_field = os.getenv('SESSION_LC_FIELD', 'librechat_conversation_id')
+# 命中映射时是否把 messages[] 截短到最后一条 user message（依赖 ChatGPT 服务端续接历史，省 token）
+session_trim_to_last_user = is_true(os.getenv('SESSION_TRIM_TO_LAST_USER', True))
+
 with open('version.txt') as f:
     version = f.read().strip()
 
@@ -192,4 +205,11 @@ logger.info("ACCOUNT_MAX_WAIT_SECONDS:     " + str(account_max_wait_seconds))
 logger.info("IP_GEO_PROVIDER:   " + str(ip_geo_provider))
 logger.info("CIRCUIT_429_COOLDOWN: " + str(circuit_429_cooldown))
 logger.info("CIRCUIT_403_COOLDOWN: " + str(circuit_403_cooldown))
+logger.info("--------------------- Session Sticky -----------------------")
+logger.info("ENABLE_SESSION_STICKY: " + str(enable_session_sticky))
+if enable_session_sticky:
+    logger.info("SESSION_DB_PATH:       " + str(session_db_path))
+    logger.info("SESSION_TTL_DAYS:      " + str(session_ttl_days))
+    logger.info("SESSION_LC_FIELD:      " + str(session_lc_field))
+    logger.info("SESSION_TRIM_TO_LAST_USER: " + str(session_trim_to_last_user))
 logger.info("-" * 60)

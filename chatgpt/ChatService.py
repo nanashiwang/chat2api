@@ -54,6 +54,8 @@ class ChatService:
         self.ws = None
         self.dynamic_model = False
         self.antiban_ctx = None
+        # Session sticky: 由 api 层 inject 后挂载，stream_response 嗅探时用于回写映射
+        self.librechat_conv_id = None
 
     def model_not_found(self):
         return HTTPException(
@@ -422,6 +424,14 @@ class ChatService:
             )
             if r.status_code != 200:
                 rtext = await r.atext()
+                # Session sticky: 注入的 conv_id 触发 4xx → 清理映射，让重试新建对话
+                if 400 <= r.status_code < 500 and self.data.get("librechat_conversation_id") \
+                        and self.conversation_id:
+                    try:
+                        from chatgpt import session_sticky as _ss
+                        _ss.drop_mapping(self.data.get("librechat_conversation_id"))
+                    except Exception:
+                        pass
                 if "application/json" == r.headers.get("Content-Type", ""):
                     detail = json.loads(rtext).get("detail", json.loads(rtext))
                     if r.status_code == 429:

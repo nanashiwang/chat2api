@@ -179,6 +179,13 @@ x-chat2api-common: &c2a-common
   networks: [c2a-net]
   labels:
     com.centurylinklabs.watchtower.enable: 'true'
+  # 资源/权限边界：单实例故障不污染母机与同行容器
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 200
+  mem_limit: 512m
+  cpus: '0.5'
   environment:
     TZ: 'Asia/Shanghai'
     CHATGPT_BASE_URL: 'https://chatgpt.com'
@@ -190,11 +197,14 @@ x-chat2api-common: &c2a-common
     AUTO_SEED: 'true'
     RANDOM_TOKEN: 'false'
     RETRY_TIMES: '3'
-    ENABLE_ANTIBAN: 'false'
-    STRICT_IP_BINDING: 'false'
+    # 一容器一账号 + 独立住宅 IP：默认开启风控规避层并强制 IP 绑定
+    ENABLE_ANTIBAN: 'true'
+    STRICT_IP_BINDING: 'true'
     BUCKET_MAX_ACCOUNTS_PER_IP: '1'
-    ACCOUNT_MIN_INTERVAL_SECONDS: '60'
-    FREE_ACCOUNT_MIN_INTERVAL_SECONDS: '180'
+    # 账号级冷却已关闭（一容器一账号，外部客户端节奏决定 QPS）；
+    # 429/403 熔断退避走 CIRCUIT_* 独立路径，不受影响。
+    ACCOUNT_MIN_INTERVAL_SECONDS: '0'
+    FREE_ACCOUNT_MIN_INTERVAL_SECONDS: '0'
     ACCOUNT_COOLDOWN_JITTER: '0.3'
     ACCOUNT_MAX_WAIT_SECONDS: '30'
     IP_GEO_PROVIDER: 'ip-api'
@@ -203,6 +213,13 @@ x-chat2api-common: &c2a-common
     CIRCUIT_BUCKET_HEAL_MINUTES: '30'
     INIT_APPLY_ON_EMPTY: 'true'
     LOG_BUFFER_SIZE: '3000'
+    # Session Sticky (LibreChat → New-API → chat2api 链路下的窗口级会话续接)
+    # 默认开启：依赖 LibreChat 在 request body 注入 librechat_conversation_id（librechat.yaml addParams）
+    # 与 New-API 的 Channel Affinity（同 lc_conv_id 永远命中同一渠道）协作；不会影响不带该字段的请求
+    ENABLE_SESSION_STICKY: 'true'
+    SESSION_TTL_DAYS: '30'
+    SESSION_LC_FIELD: 'librechat_conversation_id'
+    SESSION_TRIM_TO_LAST_USER: 'true'
 
 services:
 """

@@ -2,11 +2,14 @@
 set -euo pipefail
 
 CONFIG_FILE="/etc/chat2api.env"
+GITHUB_RAW_DEFAULT="https://raw.githubusercontent.com/nanashiwang/chat2api/main"
 
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1091
   source "$CONFIG_FILE"
 fi
+
+GITHUB_RAW="${GITHUB_RAW:-$GITHUB_RAW_DEFAULT}"
 
 detect_install_dir() {
   if [[ -n "${INSTALL_DIR:-}" && -d "${INSTALL_DIR:-}" ]]; then
@@ -66,24 +69,367 @@ run_compose() {
   fi
 }
 
+# ============================================================
+# B: 模板同步（仅单实例模式）
+# ============================================================
+# 提取 environment 块下的 ENV 名（"      KEY: 'value'" 格式）
+extract_env_keys() {
+  local file="$1"
+  awk '
+    /^    environment:/   { in_env=1; next }
+    /^    [a-z]/          { in_env=0 }
+    in_env && /^      [A-Z][A-Z0-9_]*:/ {
+      sub(/:.*/, "")
+      sub(/^[ ]+/, "")
+      print
+    }
+  ' "$file"
+}
+
+cmd_sync_template_check() {
+  # 仅打印是否有差异，返回 0=无差异 1=有差异 2=错误
+  if is_multi_install; then
+    return 0
+  fi
+  local local_compose="$INSTALL_DIR/docker-compose.yml"
+  [[ -f "$local_compose" ]] || return 2
+
+  local tmp_template
+  tmp_template="$(mktemp)" || return 2
+  if ! curl -fsSL --max-time 8 "$GITHUB_RAW/deploy/docker-compose.template.yml" -o "$tmp_template" 2>/dev/null; then
+    rm -f "$tmp_template"
+    return 2
+  fi
+
+  local new_keys
+  new_keys="$(comm -23 \
+    <(extract_env_keys "$tmp_template" | sort -u) \
+    <(extract_env_keys "$local_compose" | sort -u))"
+  rm -f "$tmp_template"
+
+  if [[ -z "$new_keys" ]]; then
+    return 0
+  fi
+  echo "[i] Upstream template has new ENV keys:"
+  echo "$new_keys" | sed 's/^/      + /'
+  echo "[i] Run: chat2api sync-template     # to merge"
+  return 1
+}
+
+cmd_sync_template() {
+  if is_multi_install; then
+    echo "Multi-instance mode auto-syncs via 'chat2api update' (regenerates from generate.py)."
+    echo "No template sync needed."
+    return 0
+  fi
+
+  local local_compose="$INSTALL_DIR/docker-compose.yml"
+  if [[ ! -f "$local_compose" ]]; then
+    echo "[!] $local_compose not found"
+    return 1
+  fi
+
+  local tmp_template
+  tmp_template="$(mktemp)"
+  echo "[*] Fetching latest template from $GITHUB_RAW ..."
+  if ! curl -fsSL --max-time 15 "$GITHUB_RAW/deploy/docker-compose.template.yml" -o "$tmp_template"; then
+    echo "[!] Download failed"
+    rm -f "$tmp_template"
+    return 1
+  fi
+
+  local local_keys remote_keys new_keys removed_keys
+  local_keys="$(extract_env_keys "$local_compose" | sort -u)"
+  remote_keys="$(extract_env_keys "$tmp_template" | sort -u)"
+  new_keys="$(comm -23 <(echo "$remote_keys") <(echo "$local_keys"))"
+  removed_keys="$(comm -13 <(echo "$remote_keys") <(echo "$local_keys"))"
+
+  if [[ -z "$new_keys" && -z "$removed_keys" ]]; then
+    echo "[✓] Template already in sync."
+    rm -f "$tmp_template"
+    return 0
+  fi
+
+  if [[ -n "$new_keys" ]]; then
+    echo "[+] New ENV keys to merge:"
+    echo "$new_keys" | sed 's/^/      + /'
+  fi
+  if [[ -n "$removed_keys" ]]; then
+    echo "[-] Local-only ENV keys (will be kept untouched):"
+    echo "$removed_keys" | sed 's/^/      - /'
+  fi
+
+  if [[ -z "$new_keys" ]]; then
+    rm -f "$tmp_template"
+    return 0
+  fi
+
+  echo
+  read -r -p "Merge new ENV keys into local docker-compose.yml? [y/N]: " ans </dev/tty
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+    rm -f "$tmp_template"
+    echo "Aborted (no changes)."
+    return 0
+  fi
+
+  # 备份
+  local backup
+  backup="${local_compose}.bak-$(date +%Y%m%d-%H%M%S)"
+  cp "$local_compose" "$backup"
+  echo "[*] Backed up: $backup"
+
+  # 提取每个新 key 在 template 中的完整行（含值与缩进）
+  local insert_block=""
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    local line
+    line="$(awk -v k="$key" '
+      $0 ~ "^      "k":" { print; exit }
+    ' "$tmp_template")"
+    if [[ -n "$line" ]]; then
+      insert_block+="$line"$'\n'
+    fi
+  done <<< "$new_keys"
+
+  if [[ -z "$insert_block" ]]; then
+    echo "[!] Could not locate new ENV lines in template; aborting."
+    rm -f "$tmp_template"
+    return 1
+  fi
+
+  # 在 healthcheck: 之前插入；若没有 healthcheck 则在 environment 块末尾追加
+  if grep -q "^    healthcheck:" "$local_compose"; then
+    awk -v block="$insert_block" '
+      /^    healthcheck:/ && !inserted {
+        printf "%s", block
+        inserted = 1
+      }
+      { print }
+    ' "$local_compose" > "${local_compose}.new"
+  else
+    awk -v block="$insert_block" '
+      /^    environment:/ { in_env=1 }
+      in_env && /^    [a-z]/ && !/^    environment:/ && !inserted {
+        printf "%s", block
+        inserted = 1
+      }
+      { print }
+    ' "$local_compose" > "${local_compose}.new"
+  fi
+
+  mv "${local_compose}.new" "$local_compose"
+  rm -f "$tmp_template"
+  echo "[✓] Merged. Run 'chat2api restart' to apply."
+}
+
+# ============================================================
+# D: 单实例 → 多实例迁移
+# ============================================================
+cmd_migrate() {
+  local mode="${1:-prep}"
+
+  if is_multi_install; then
+    echo "[i] Already in multi-instance mode. Nothing to do."
+    return 0
+  fi
+
+  case "$mode" in
+    prep)   cmd_migrate_prep ;;
+    apply)  cmd_migrate_apply ;;
+    rollback) cmd_migrate_rollback "${2:-}" ;;
+    *)
+      echo "Usage: chat2api migrate [prep|apply|rollback <backup-dir>]"
+      echo "  prep      Backup current install + generate accounts.csv (safe)"
+      echo "  apply     Stop single-instance + start multi (destructive)"
+      echo "  rollback  Restore from a previous backup directory"
+      return 1
+      ;;
+  esac
+}
+
+cmd_migrate_prep() {
+  local multi_dir="$INSTALL_DIR/deploy/multi"
+  local backup_dir="${INSTALL_DIR}.backup-$(date +%Y%m%d-%H%M%S)"
+
+  if [[ ! -f "$INSTALL_DIR/.env" ]]; then
+    echo "[!] $INSTALL_DIR/.env not found; cannot migrate"
+    return 1
+  fi
+  if [[ ! -d "$multi_dir" ]]; then
+    echo "[!] $multi_dir not found."
+    echo "    Update repo first (re-run install.sh or git pull) so deploy/multi/ exists."
+    return 1
+  fi
+
+  echo "============================================================"
+  echo "  chat2api migrate prep  (Single → Multi-instance)"
+  echo "============================================================"
+  echo "  Source:  $INSTALL_DIR (single-instance)"
+  echo "  Backup:  $backup_dir"
+  echo "  Multi:   $multi_dir"
+  echo
+  echo "[!] WARNING: This step is non-destructive (only backups + generates csv)."
+  echo "    'chat2api migrate apply' is the destructive step."
+  echo
+  read -r -p "Continue? [y/N]: " ans </dev/tty
+  [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; return 0; }
+
+  echo "[*] Backing up $INSTALL_DIR → $backup_dir ..."
+  cp -a "$INSTALL_DIR" "$backup_dir"
+  chmod 700 "$backup_dir" 2>/dev/null || true
+  echo "[✓] Backup ready."
+
+  local csv="$multi_dir/accounts.csv"
+  local example_csv="$multi_dir/accounts.example.csv"
+  local tokens_file="$INSTALL_DIR/data/token.txt"
+
+  if [[ -f "$csv" ]]; then
+    echo "[i] $csv already exists; skipping CSV generation"
+  else
+    echo "slug,proxy_url,note" > "$csv"
+    if [[ -f "$tokens_file" ]]; then
+      local count=0 i=0
+      while IFS= read -r line; do
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        i=$((i+1))
+        printf 'acc%d,,migrated token #%d\n' "$i" "$i" >> "$csv"
+        count=$i
+      done < "$tokens_file"
+      if [[ "$count" -eq 0 ]]; then
+        echo "acc1,,migrated (please replace with real account)" >> "$csv"
+        echo "[!] $tokens_file empty; created template csv with 1 placeholder"
+      else
+        echo "[✓] Generated $csv with $count account slot(s)"
+      fi
+    else
+      echo "acc1,,migrated (please replace with real account)" >> "$csv"
+      echo "[!] $tokens_file not found; created template csv with 1 placeholder"
+    fi
+  fi
+
+  cat <<EOF
+
+============================================================
+  Next steps
+============================================================
+
+  1) Edit accounts.csv (set proxy_url, rename slugs if you want):
+       \$EDITOR $csv     (or just: vi $csv)
+
+  2) Apply migration (will stop single-instance + start multi):
+       chat2api migrate apply
+
+  3) After multi starts, import cookies/tokens via the UI Harvester
+     for each new instance (data has been backed up at:
+       $backup_dir/data/
+     for reference / manual restore).
+
+  Rollback at any time before apply:
+       chat2api migrate rollback $backup_dir
+
+EOF
+}
+
+cmd_migrate_apply() {
+  local multi_dir="$INSTALL_DIR/deploy/multi"
+  local csv="$multi_dir/accounts.csv"
+
+  if [[ ! -f "$csv" ]]; then
+    echo "[!] $csv not found. Run 'chat2api migrate prep' first."
+    return 1
+  fi
+
+  echo "============================================================"
+  echo "  chat2api migrate apply  (DESTRUCTIVE)"
+  echo "============================================================"
+  echo "  This will:"
+  echo "    1. Stop and remove the single-instance container"
+  echo "    2. Bring up multi-instance based on:"
+  echo "         $csv"
+  echo
+  echo "  Current accounts.csv content:"
+  echo "  --------------------------------------"
+  sed 's/^/    /' "$csv"
+  echo "  --------------------------------------"
+  echo
+  read -r -p 'Type "yes" to proceed: ' ans </dev/tty
+  if [[ "$ans" != "yes" ]]; then
+    echo "Aborted."
+    return 0
+  fi
+
+  echo "[*] Stopping single-instance..."
+  (cd "$INSTALL_DIR" && run_compose down 2>&1 | tail -5) || true
+
+  echo "[*] Bringing up multi-instance..."
+  if (cd "$multi_dir" && ./manage.sh init); then
+    echo
+    echo "[✓] Migration applied."
+    echo "    chat2api status     # verify"
+    echo "    chat2api secrets    # see new credentials"
+  else
+    echo "[!] manage.sh init failed; you can rollback:"
+    echo "    chat2api migrate rollback <backup-dir>"
+    return 1
+  fi
+}
+
+cmd_migrate_rollback() {
+  local backup_dir="${1:-}"
+  if [[ -z "$backup_dir" ]]; then
+    echo "Usage: chat2api migrate rollback <backup-dir>"
+    echo
+    echo "Available backups:"
+    ls -d "${INSTALL_DIR}.backup-"* 2>/dev/null || echo "  (none found)"
+    return 1
+  fi
+  if [[ ! -d "$backup_dir" ]]; then
+    echo "[!] $backup_dir not found"
+    return 1
+  fi
+
+  echo "[!] Rollback will:"
+  echo "    1. Stop multi-instance (if running)"
+  echo "    2. Restore $INSTALL_DIR from $backup_dir"
+  echo "    3. Restart single-instance"
+  echo
+  read -r -p 'Type "yes" to proceed: ' ans </dev/tty
+  [[ "$ans" == "yes" ]] || { echo "Aborted."; return 0; }
+
+  if [[ -x "$INSTALL_DIR/deploy/multi/manage.sh" ]]; then
+    (cd "$INSTALL_DIR/deploy/multi" && ./manage.sh down 2>&1 | tail -5) || true
+  fi
+
+  local trash="${INSTALL_DIR}.discarded-$(date +%Y%m%d-%H%M%S)"
+  mv "$INSTALL_DIR" "$trash"
+  cp -a "$backup_dir" "$INSTALL_DIR"
+  echo "[*] Restored from backup; old install moved to $trash (delete after verifying)"
+
+  (cd "$INSTALL_DIR" && run_compose up -d)
+  echo "[✓] Rollback done. Run 'chat2api status' to verify."
+}
+
+# ============================================================
+# Help
+# ============================================================
 show_help() {
   if is_multi_install; then
     cat <<'EOF'
 Usage: chat2api <command>
 
 Multi-instance commands:
-  update      Re-generate config and recreate services
-  start       Same as update
-  restart     Same as update
-  stop        Stop all multi-instance services
-  status      Show multi-instance status and sampled egress IPs
-  verify      Verify admin/tokens routing for all instances
-  logs <slug> Tail one instance logs
-  shell <slug> Enter one instance shell
-  secrets     Print instance auth/admin secrets
-  admin       Print orchestrator/admin entry hints
-  path        Print install directory
-  help        Show this help
+  update        Re-generate config and recreate services
+  start         Same as update
+  restart       Same as update
+  stop          Stop all multi-instance services
+  status        Show multi-instance status and sampled egress IPs
+  verify        Verify admin/tokens routing for all instances
+  logs <slug>   Tail one instance logs
+  shell <slug>  Enter one instance shell
+  secrets       Print instance auth/admin secrets
+  admin         Print orchestrator/admin entry hints
+  path          Print install directory
+  help          Show this help
 
 Any other command is passed through to: deploy/multi/manage.sh
 EOF
@@ -92,20 +438,31 @@ EOF
   cat <<'EOF'
 Usage: chat2api <command>
 
-Commands:
-  update      Pull latest image and recreate containers
-  restart     Restart services
-  stop        Stop services
-  start       Start services
-  status      Show compose status
-  logs        Tail chat2api logs
-  admin       Print admin login URL
-  api         Print API base URL
-  path        Print install directory
-  help        Show this help
+Single-instance commands:
+  update              Pull latest image and recreate containers
+                      (also reports if upstream template has new ENV keys)
+  sync-template       Merge new ENV keys from upstream template into
+                      local docker-compose.yml (interactive, makes backup)
+  migrate prep        Prepare migration to multi-instance:
+                      backup install dir + generate deploy/multi/accounts.csv
+  migrate apply       Stop single, start multi (destructive)
+  migrate rollback <backup-dir>
+                      Restore single-instance from a previous backup
+  restart             Restart services
+  stop                Stop services
+  start               Start services
+  status              Show compose status
+  logs                Tail chat2api logs
+  admin               Print admin login URL
+  api                 Print API base URL
+  path                Print install directory
+  help                Show this help
 EOF
 }
 
+# ============================================================
+# Dispatcher
+# ============================================================
 command_name="${1:-help}"
 
 case "$command_name" in
@@ -115,7 +472,15 @@ case "$command_name" in
     else
       run_compose pull
       run_compose up -d
+      # 提示是否有新 ENV 待合并（不强制）
+      cmd_sync_template_check || true
     fi
+    ;;
+  sync-template)
+    cmd_sync_template
+    ;;
+  migrate)
+    cmd_migrate "${@:2}"
     ;;
   restart)
     if is_multi_install; then

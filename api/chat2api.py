@@ -11,9 +11,10 @@ import utils.globals as globals
 from app import app, templates, security_scheme
 from chatgpt.ChatService import ChatService
 from chatgpt.authorization import refresh_all_tokens
+from chatgpt import session_sticky
 from utils.bootstrap import initialize_from_env
 from utils.Logger import logger
-from utils.configs import api_prefix, scheduled_refresh, history_disabled
+from utils.configs import api_prefix, scheduled_refresh, history_disabled, enable_session_sticky
 from utils.retry import async_retry
 from utils import antiban
 from utils.antiban import circuit as antiban_circuit
@@ -25,6 +26,16 @@ scheduler = AsyncIOScheduler()
 async def app_start():
     initialize_from_env()
     await antiban.init()
+
+    # Session sticky: 启动时初始化 SQLite + 启动 TTL 清理定时任务
+    if enable_session_sticky:
+        session_sticky.init_db()
+        scheduler.add_job(
+            id='session_sticky_cleanup',
+            func=session_sticky.cleanup_expired,
+            trigger='interval',
+            hours=24,
+        )
 
     # Antiban 自愈定时任务
     from utils.configs import enable_antiban, circuit_bucket_heal_minutes
@@ -43,6 +54,9 @@ async def app_start():
         asyncio.get_event_loop().call_later(0, lambda: asyncio.create_task(refresh_all_tokens(force_refresh=False)))
     elif enable_antiban:
         # 只有 antiban 启用、没启用 refresh 时，也需要把 scheduler 跑起来
+        scheduler.start()
+    elif enable_session_sticky:
+        # 仅 session_sticky 启用时，scheduler 也要启动以执行 cleanup
         scheduler.start()
 
 
@@ -104,7 +118,14 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
         request_data = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail={"error": "Invalid JSON body"})
+    # Session sticky: LibreChat conv_id → ChatGPT conv_id 翻译注入
+    # 副作用: 命中映射时改写 request_data['conversation_id'/'parent_message_id'/'messages']
+    # 返回 lc_conv_id 用于流式响应嗅探回写；未启用或无 lc 字段时返回 None
+    lc_conv_id = session_sticky.inject_session(request_data) if enable_session_sticky else None
     chat_service, res = await async_retry(process, request_data, req_token)
+    # 把 lc_conv_id 挂到 chat_service 上，供 stream_response 嗅探时回写 DB
+    if lc_conv_id:
+        chat_service.librechat_conv_id = lc_conv_id
     try:
         if isinstance(res, types.AsyncGeneratorType):
             background = BackgroundTask(chat_service.close_client)

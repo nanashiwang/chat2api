@@ -46,6 +46,13 @@ services:
       INIT_APPLY_ON_EMPTY: 'true'
       INIT_FORCE: 'false'
 
+      # ============ Session Sticky（LibreChat → New-API → chat2api 链路下的窗口级会话续接） ============
+      # 默认开启；仅在 request body 携带 librechat_conversation_id 时生效，对裸 OpenAI 客户端无影响
+      ENABLE_SESSION_STICKY: 'true'
+      SESSION_TTL_DAYS: '30'
+      SESSION_LC_FIELD: 'librechat_conversation_id'
+      SESSION_TRIM_TO_LAST_USER: 'true'
+
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5005/${API_PREFIX}/admin/login > /dev/null || exit 1"]
       interval: 30s

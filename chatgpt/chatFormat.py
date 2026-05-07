@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from api.files import get_file_content
 from api.models import model_system_fingerprint
 from api.tokens import split_tokens_from_content, calculate_image_tokens, num_tokens_from_messages
+from chatgpt import session_sticky
 from utils.Logger import logger
 
 moderation_message = "I'm sorry, I cannot provide or engage in any content related to pornography, violence, or any unethical material. If you have any other questions or need assistance, please feel free to let me know. I'll do my best to provide support and assistance."
@@ -321,6 +322,16 @@ async def stream_response(service, response, model, max_tokens):
                 last_message_id = message_id
                 last_role = role
                 last_status = status
+                # Session sticky: 嗅探到 ChatGPT 端 conv_id + message_id 即回写映射
+                # （多次 chunk 触发时最后一次会覆盖，最终 parent_msg_id = 最新一条 assistant message）
+                if getattr(service, "librechat_conv_id", None) and conversation_id and message_id \
+                        and role == 'assistant':
+                    try:
+                        session_sticky.sniff_and_save(
+                            service.librechat_conv_id, conversation_id, message_id,
+                        )
+                    except Exception as _e:
+                        logger.error(f"[session_sticky] sniff error: {_e}")
                 if not end and not delta.get("content"):
                     delta = {"role": "assistant", "content": ""}
                 chunk_new_data["choices"][0]["delta"] = delta
