@@ -29,7 +29,7 @@ detect_install_dir() {
 
   local dir
   for dir in "${candidates[@]}"; do
-    if [[ -f "$dir/docker-compose.yml" || -f "$dir/compose.yml" || -f "$dir/compose.yaml" ]]; then
+    if [[ -f "$dir/docker-compose.yml" || -f "$dir/compose.yml" || -f "$dir/compose.yaml" || -x "$dir/deploy/multi/manage.sh" ]]; then
       printf "%s\n" "$dir"
       return
     fi
@@ -49,6 +49,14 @@ fi
 
 cd "$INSTALL_DIR"
 
+is_multi_install() {
+  [[ -x "$INSTALL_DIR/deploy/multi/manage.sh" ]]
+}
+
+run_multi_manage() {
+  (cd "$INSTALL_DIR/deploy/multi" && ./manage.sh "$@")
+}
+
 run_compose() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     sudo docker compose "$@"
@@ -59,6 +67,28 @@ run_compose() {
 }
 
 show_help() {
+  if is_multi_install; then
+    cat <<'EOF'
+Usage: chat2api <command>
+
+Multi-instance commands:
+  update      Re-generate config and recreate services
+  start       Same as update
+  restart     Same as update
+  stop        Stop all multi-instance services
+  status      Show multi-instance status and sampled egress IPs
+  verify      Verify admin/tokens routing for all instances
+  logs <slug> Tail one instance logs
+  shell <slug> Enter one instance shell
+  secrets     Print instance auth/admin secrets
+  admin       Print orchestrator/admin entry hints
+  path        Print install directory
+  help        Show this help
+
+Any other command is passed through to: deploy/multi/manage.sh
+EOF
+    return
+  fi
   cat <<'EOF'
 Usage: chat2api <command>
 
@@ -80,33 +110,85 @@ command_name="${1:-help}"
 
 case "$command_name" in
   update)
-    run_compose pull
-    run_compose up -d
+    if is_multi_install; then
+      run_multi_manage apply
+    else
+      run_compose pull
+      run_compose up -d
+    fi
     ;;
   restart)
-    run_compose restart
+    if is_multi_install; then
+      run_multi_manage apply
+    else
+      run_compose restart
+    fi
     ;;
   stop)
-    run_compose stop
+    if is_multi_install; then
+      run_multi_manage down
+    else
+      run_compose stop
+    fi
     ;;
   start)
-    run_compose up -d
+    if is_multi_install; then
+      run_multi_manage apply
+    else
+      run_compose up -d
+    fi
     ;;
   status)
-    run_compose ps
+    if is_multi_install; then
+      run_multi_manage status
+    else
+      run_compose ps
+    fi
     ;;
   logs)
-    run_compose logs -f chat2api
+    if is_multi_install; then
+      run_multi_manage logs "${@:2}"
+    else
+      run_compose logs -f chat2api
+    fi
+    ;;
+  shell)
+    if is_multi_install; then
+      run_multi_manage shell "${@:2}"
+    else
+      echo "shell command is only available in multi-instance mode"
+      exit 1
+    fi
+    ;;
+  verify)
+    if is_multi_install; then
+      run_multi_manage verify
+    else
+      echo "verify command is only available in multi-instance mode"
+      exit 1
+    fi
+    ;;
+  secrets)
+    if is_multi_install; then
+      run_multi_manage secrets
+    else
+      echo "secrets command is only available in multi-instance mode"
+      exit 1
+    fi
     ;;
   admin)
-    if [[ -n "${PORT:-}" && -n "${API_PREFIX:-}" ]]; then
+    if is_multi_install; then
+      run_multi_manage secrets
+    elif [[ -n "${PORT:-}" && -n "${API_PREFIX:-}" ]]; then
       echo "http://<server-ip>:${PORT}/${API_PREFIX}/admin/login"
     else
       echo "PORT/API_PREFIX not found in /etc/chat2api.env"
     fi
     ;;
   api)
-    if [[ -n "${PORT:-}" && -n "${API_PREFIX:-}" ]]; then
+    if is_multi_install; then
+      run_multi_manage secrets
+    elif [[ -n "${PORT:-}" && -n "${API_PREFIX:-}" ]]; then
       echo "http://<server-ip>:${PORT}/${API_PREFIX}/v1/chat/completions"
     else
       echo "PORT/API_PREFIX not found in /etc/chat2api.env"
@@ -119,8 +201,12 @@ case "$command_name" in
     show_help
     ;;
   *)
-    echo "Unknown command: $command_name"
-    show_help
-    exit 1
+    if is_multi_install; then
+      run_multi_manage "$command_name" "${@:2}"
+    else
+      echo "Unknown command: $command_name"
+      show_help
+      exit 1
+    fi
     ;;
 esac

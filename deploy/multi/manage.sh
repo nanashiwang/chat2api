@@ -15,6 +15,7 @@ CSV="$DIR/accounts.csv"
 EXAMPLE_CSV="$DIR/accounts.example.csv"
 GEN_DIR="$DIR/generated"
 COMPOSE="$GEN_DIR/docker-compose.yml"
+REPO_ROOT="$(cd "$DIR/../.." && pwd)"
 
 # orchestrator 必需：让容器内的 docker compose --project-directory 指向宿主路径
 export MULTI_HOST_PATH="$DIR"
@@ -40,6 +41,21 @@ require_compose() {
 
 dc() {
     docker compose -f "$COMPOSE" --project-directory "$DIR" "$@"
+}
+
+slugs() {
+    awk -F, 'NR>1 && $1!="" {print $1}' "$CSV"
+}
+
+as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        err "需要 root 权限或已安装 sudo"
+        exit 1
+    fi
 }
 
 cleanup_renamed_containers() {
@@ -70,6 +86,7 @@ cmd_apply() {
             && log "nginx reload OK" \
             || log "nginx reload 失败（首次启动可忽略）"
     fi
+    cmd_verify
     ok "完成。运行 ./manage.sh secrets 查看凭证 / 编排面板访问入口"
 }
 
@@ -199,6 +216,79 @@ cmd_status() {
     done
 }
 
+check_contains() {
+    local url="$1" needle="$2" tries="${3:-8}" body=""
+    local i
+    for i in $(seq 1 "$tries"); do
+        body="$(curl -fsS --max-time 15 "$url" 2>/dev/null || true)"
+        if printf '%s' "$body" | grep -q "$needle"; then
+            return 0
+        fi
+        sleep 1
+    done
+    printf '%s' "$body"
+    return 1
+}
+
+cmd_verify() {
+    require_compose
+    ensure_csv
+    local port="${CHAT2API_GATEWAY_PORT:-60403}"
+    local failed=0 slug env_prefix container_prefix nginx_block admin_out tokens_out
+    log "校验路由与后台页面..."
+    for slug in $(slugs); do
+        env_prefix="$(awk -F= '$1=="API_PREFIX"{print $2}' "$GEN_DIR/env/${slug}.env" 2>/dev/null | tail -1)"
+        container_prefix="$(docker exec "c2a-${slug}" sh -lc 'printf %s "${API_PREFIX:-}"' 2>/dev/null || true)"
+        if [ -z "$env_prefix" ] || [ "$env_prefix" != "$container_prefix" ]; then
+            err "${slug}: API_PREFIX 不一致（env=${env_prefix:-<empty>} container=${container_prefix:-<empty>}）"
+            failed=1
+            continue
+        fi
+
+        nginx_block="$(docker exec c2a-nginx nginx -T 2>/dev/null | grep -A8 "location /${slug}/" || true)"
+        if ! printf '%s\n' "$nginx_block" | grep -q "$env_prefix"; then
+            err "${slug}: nginx 生效配置未指向 ${env_prefix}"
+            failed=1
+            continue
+        fi
+
+        if ! admin_out="$(check_contains "http://127.0.0.1:${port}/${slug}/admin/login" '管理后台登录\|<title>Admin Login</title>')"; then
+            err "${slug}: admin/login 校验失败"
+            printf '%s\n' "$admin_out" | head -3
+            failed=1
+            continue
+        fi
+
+        if ! tokens_out="$(check_contains "http://127.0.0.1:${port}/${slug}/tokens" '<title>Tokens 管理</title>')"; then
+            err "${slug}: /tokens 校验失败"
+            printf '%s\n' "$tokens_out" | head -3
+            failed=1
+            continue
+        fi
+
+        ok "${slug}: admin/tokens 正常"
+    done
+
+    if [ "$failed" -ne 0 ]; then
+        err "校验失败：请先处理上面的实例"
+        return 1
+    fi
+}
+
+cmd_install_cli() {
+    local config_tmp
+    config_tmp="$(mktemp)"
+    cat > "$config_tmp" <<EOF
+INSTALL_DIR='$REPO_ROOT'
+EOF
+    as_root mkdir -p /etc
+    as_root cp "$config_tmp" /etc/chat2api.env
+    rm -f "$config_tmp"
+    as_root install -m 0755 "$REPO_ROOT/deploy/chat2api.sh" /usr/local/bin/chat2api
+    ok "已安装 /usr/local/bin/chat2api"
+    log "现在可直接使用: chat2api status / chat2api update / chat2api verify"
+}
+
 cmd_help() {
     cat <<'EOF'
 chat2api 多实例运维（一容器一账号）
@@ -210,10 +300,12 @@ chat2api 多实例运维（一容器一账号）
   ./manage.sh remove <slug>                 移除单个账号 + apply（保留 data/）
   ./manage.sh list                          所有容器状态（docker compose ps）
   ./manage.sh status                        状态 + 抽样验证出口 IP
+  ./manage.sh verify                        校验每个实例的后台/路由是否串线
   ./manage.sh logs <slug> [N]               跟随该实例日志（默认 200 行）
   ./manage.sh shell <slug>                  进入该实例容器 shell
   ./manage.sh secrets                       打印所有 AUTH / ADMIN_PWD（敏感）
   ./manage.sh orch-password [pwd]           重置编排面板密码（不传则随机生成）
+  ./manage.sh install-cli                   安装全局 chat2api 命令
   ./manage.sh down                          停止全部（数据保留）
   ./manage.sh help                          显示本帮助
 
@@ -237,10 +329,12 @@ case "$cmd" in
     remove)  cmd_remove "$@" ;;
     list)    cmd_list "$@" ;;
     status)  cmd_status "$@" ;;
+    verify)  cmd_verify "$@" ;;
     logs)    cmd_logs "$@" ;;
     shell)   cmd_shell "$@" ;;
     secrets) cmd_secrets "$@" ;;
     orch-password) cmd_orch_password "$@" ;;
+    install-cli) cmd_install_cli "$@" ;;
     down)    cmd_down "$@" ;;
     help|-h|--help) cmd_help ;;
     *) err "未知命令: $cmd"; cmd_help; exit 1 ;;

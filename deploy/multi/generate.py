@@ -309,6 +309,8 @@ http {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_read_timeout 600s;
     proxy_send_timeout 600s;
+    # Docker 内部 DNS。配合变量 proxy_pass，避免容器重建后 nginx 继续缓存旧 IP。
+    resolver 127.0.0.11 ipv6=off valid=30s;
 
     # 简单访问日志（生产可换 json）
     log_format upstream_log '$remote_addr - [$time_local] "$request" '
@@ -345,7 +347,9 @@ NGINX_ORCH_LOCATION = """\
 NGINX_LOCATION = """\
         # ---- {slug} ({note}) ----
         location /{slug}/ {{
-            proxy_pass http://c2a-{slug}:5005/{api_prefix}/;
+            set $chat2api_upstream c2a-{slug}:5005;
+            rewrite ^/{slug}/(.*)$ /{api_prefix}/$1 break;
+            proxy_pass http://$chat2api_upstream;
             # 把外部访问域名/协议传给 chat2api，避免页面里出现容器内网地址
             proxy_set_header Host $http_host;
             proxy_set_header X-Forwarded-Host $http_host;
