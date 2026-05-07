@@ -35,6 +35,8 @@ curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/in
 | 🔐 **安全加固** | IP 白名单 / HttpOnly / CSRF / 密码隔离 / CF 指引 | [SECURITY](docs/SECURITY.md) |
 | 🔄 **UI 代理热加载** | 添加/删除代理即时生效，不需重启 | [FEATURES#3](docs/FEATURES.md#3-管理后台增强) |
 | 🎯 **新版 Token 识别** | 支持 `rt_*` 新格式 + `sess-*` SessionToken + chat_refresh 现代化 | [FEATURES#6](docs/FEATURES.md#6-新版-token-支持) |
+| 🧩 **一容器一账号编排** | `deploy/multi/` 提供生成器 + nginx 路径分发 + orchestrator 面板，N 个账号 = N 个隔离容器 | [部署：多实例](#多实例一容器一账号) |
+| 🔗 **LibreChat 会话续接** | request body 携带 `librechat_conversation_id` 即可让同窗口在 ChatGPT 端续会话（节省 token + 用上账号原生记忆） | [LibreChat 集成](#librechat--new-api-集成) |
 
 ### 核心运维流程
 
@@ -64,6 +66,127 @@ curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/in
 ```javascript
 // 浏览器登录 chatgpt.com 后，F12 Console 执行
 document.cookie.split(';').filter(x=>x.includes('session-token')).join('; ')
+```
+
+---
+
+## LibreChat / New-API 集成
+
+> 适用场景：`LibreChat → New-API → chat2api → ChatGPT` 链路下，希望**同一对话窗口在 ChatGPT 服务端续会话**（账号原生 Memory 自动累积，每次只发最新一条 user message 节省 token）。
+
+### 工作原理
+
+```
+[LibreChat 窗口 X]                            [chat2api]
+  messages = [system, u1, a1, u2, a2, u3]      ① 看到 librechat_conversation_id
+  body 含 librechat_conversation_id            ② 查 sqlite 映射 → ChatGPT conv_id
+        ↓                                      ③ 命中：注入 conversation_id +
+[New-API Channel Affinity]                       parent_message_id，messages 截短
+  按 lc_conv_id 路由到固定渠道                 ④ 转发 ChatGPT
+        ↓                                     ⑤ 嗅探响应里的 conv_id 回写映射
+[chat2api 实例 K]
+        ↓
+[ChatGPT 服务端] 续接 conv，自动用上账号原生记忆
+```
+
+### 三段配置（chat2api 已默认开启）
+
+#### 1. LibreChat（`librechat.yaml`，零代码）
+
+```yaml
+endpoints:
+  custom:
+    - name: "chat2api"
+      apiKey: "${NEWAPI_KEY}"
+      baseURL: "https://your-newapi/v1"
+      addParams:
+        librechat_conversation_id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
+        librechat_user_id: "{{LIBRECHAT_USER_ID}}"
+      models:
+        default: ["gpt-4o", "gpt-4o-mini", "o1-preview", "o3-mini"]
+```
+
+#### 2. New-API Channel Affinity（后台 UI 配置）
+
+```json
+{
+  "enabled": true,
+  "rules": [{
+    "name": "librechat_conv_sticky",
+    "model_regex": ["gpt.*", "o1.*", "o3.*"],
+    "key_sources": [{"type": "gjson", "path": "librechat_conversation_id"}],
+    "ttl_seconds": 86400,
+    "switch_on_success": true,
+    "skip_retry_on_failure": false
+  }]
+}
+```
+
+#### 3. chat2api（默认开启，对裸 OpenAI 客户端无影响）
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `ENABLE_SESSION_STICKY` | `true` | 总开关 |
+| `SESSION_TTL_DAYS` | `30` | 多少天未活跃自动清理映射 |
+| `SESSION_LC_FIELD` | `librechat_conversation_id` | request body 中携带 LibreChat conversationId 的字段名 |
+| `SESSION_TRIM_TO_LAST_USER` | `true` | 命中映射时是否把 messages[] 截到只含最后一条 user（依赖 ChatGPT 服务端续历史） |
+
+数据存储：`/app/data/sessions.db`（SQLite，跟随实例数据卷）。
+映射失效（ChatGPT 端 conv 被删）→ 自动清理 + `async_retry` 重新建对话。
+
+### 验证
+
+```bash
+# 在某 chat2api 实例容器内
+docker exec -it c2a-<slug> sqlite3 /app/data/sessions.db \
+  "SELECT * FROM lc_session_map LIMIT 5;"
+
+# 查看命中日志
+docker logs c2a-<slug> | grep session_sticky
+# 应有:  [session_sticky] hit lc=lc-uuid... → cv=cv-XXX...
+```
+
+---
+
+## 多实例（一容器一账号）
+
+> 适用场景：N 个 ChatGPT 账号 + 多用户并发；通过 `deploy/multi/` 把每个账号编排到独立容器（独立代理 / 独立指纹 / 独立 cookie 卷），单账号被风控时其他账号不连坐。
+
+### 一句话部署
+
+```bash
+# 1. 先用一键脚本把 chat2api 装好（任意模式）
+curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
+
+# 2. 切到 multi 目录，初始化 N 账号编排
+cd ~/chat2api/deploy/multi
+cp accounts.example.csv accounts.csv
+vi accounts.csv          # 每行一个账号: slug,proxy_url,note
+./manage.sh init         # 生成 compose / nginx / 启动全部容器
+./manage.sh install-cli  # 让全局 chat2api 命令切到多实例模式
+```
+
+### 已默认应用的工程加固（`deploy/multi/generate.py`）
+
+| 类别 | 项 | 默认 |
+|---|---|---|
+| 风控 | `ENABLE_ANTIBAN` | `true` |
+| 风控 | `STRICT_IP_BINDING` | `true` |
+| 风控 | `BUCKET_MAX_ACCOUNTS_PER_IP` | `1` |
+| 风控 | 账号级冷却 (`ACCOUNT_MIN_INTERVAL_SECONDS`) | `0`（一容器一账号无需自限速） |
+| 风控 | 429/403 熔断退避 | 1800/3600s |
+| 安全 | `cap_drop: [ALL]` + `no-new-privileges` | ✅ |
+| 资源 | `mem_limit / cpus / pids_limit` | 512m / 0.5 / 200 |
+| 续会话 | `ENABLE_SESSION_STICKY` | `true` |
+
+### 从单实例迁移到多实例
+
+```bash
+chat2api migrate prep                 # 备份 + 生成 accounts.csv 模板（安全）
+vi ~/chat2api/deploy/multi/accounts.csv
+chat2api migrate apply                # 停单 + 启多（需输 yes 确认）
+# 不满意可回滚：
+chat2api migrate rollback ~/chat2api.backup-YYYYMMDD-HHMMSS
 ```
 
 ---
@@ -197,6 +320,16 @@ curl --location 'http://127.0.0.1:5005/v1/chat/completions' \
 |      | RANDOM_TOKEN      | `true`                                                      | `true`                | 是否随机选取后台 `Token` ，开启后随机后台账号，关闭后为顺序轮询                         |
 | 网关功能 | ENABLE_GATEWAY    | `false`                                                     | `false`               | 是否启用网关模式，开启后可以使用镜像站，但也将会不设防                                  |
 |      | AUTO_SEED          | `false`                                                     | `true`               | 是否启用随机账号模式，默认启用，输入`seed`后随机匹配后台`Token`。关闭之后需要手动对接接口，来进行`Token`管控。    |
+| Antiban | ENABLE_ANTIBAN | `true` | `false`（多实例 generate.py 默认 `true`） | 风控规避层总开关，开启后启用 IP 粘性桶 / 地域一致性 / 熔断自愈 |
+|      | STRICT_IP_BINDING | `true` | `true` | 严格 IP 绑定，开启后无匹配代理时拒绝（不退化到母机直连） |
+|      | BUCKET_MAX_ACCOUNTS_PER_IP | `1` | `5`（多实例默认 `1`） | 每个 IP 桶容纳的账号数；一容器一账号 + 独立住宅 IP 时设 1 |
+|      | ACCOUNT_MIN_INTERVAL_SECONDS | `60` | `60` | Plus/Team 账号最小请求间隔；多实例下默认 `0`（不限速） |
+|      | CIRCUIT_429_COOLDOWN | `1800` | `1800` | 429 触发后该账号冷却秒数（独立于账号级冷却，始终生效） |
+|      | CIRCUIT_403_COOLDOWN | `3600` | `3600` | 403/cf_chl_opt 触发后 IP 桶冷冻秒数 |
+| Session Sticky | ENABLE_SESSION_STICKY | `true` | `false`（一键部署模板默认 `true`） | LibreChat → New-API → chat2api 链路下的窗口级会话续接总开关 |
+|      | SESSION_LC_FIELD  | `librechat_conversation_id` | `librechat_conversation_id` | request body 中携带 LibreChat conversationId 的字段名（与 librechat.yaml addParams 对齐） |
+|      | SESSION_TTL_DAYS  | `30` | `30` | 多少天未活跃的映射会被自动清理 |
+|      | SESSION_TRIM_TO_LAST_USER | `true` | `true` | 命中映射时是否把 messages[] 截到只含最后一条 user（节省 token，依赖 ChatGPT 服务端续历史） |
 
 ## 部署
 
@@ -248,9 +381,26 @@ docker-compose up -d
 本分支的一键部署脚本会自动安装宿主管理命令，部署完成后可直接使用：
 
 ```bash
-chat2api status
-chat2api update
-chat2api logs
+# 通用（单/多实例自动适配）
+chat2api status                  # 容器状态（多实例下含出口 IP 抽样）
+chat2api update                  # 拉镜像并重建（多实例下走 manage.sh apply）
+chat2api logs [slug]             # 实时日志（多实例需指定 slug）
+chat2api restart                 # 重启
+chat2api stop                    # 停止
+chat2api path                    # 打印安装目录
+
+# 单实例专属
+chat2api sync-template           # 检测并合并上游 docker-compose 模板的新 ENV
+                                 # （update 完会自动提示，但不强制改写）
+chat2api migrate prep            # 准备从单实例迁到多实例（仅备份+生成 csv，安全）
+chat2api migrate apply           # 切换到多实例（destructive，需输 yes 确认）
+chat2api migrate rollback <dir>  # 从备份回滚到单实例
+
+# 多实例专属
+chat2api verify                  # 校验每实例的 admin / tokens 路由
+chat2api secrets                 # 打印每实例 AUTH/ADMIN 凭据 + orchestrator 入口
+chat2api shell <slug>            # 进入指定实例容器 shell
+chat2api admin                   # 打印管理后台访问 URL
 ```
 
 旧机器如果曾经手动部署，重新跑一键部署脚本即可沿用现有配置并补装命令：
