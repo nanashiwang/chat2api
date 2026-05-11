@@ -253,6 +253,8 @@ cmd_secrets() {
     if [ -f "$GEN_DIR/orch.env" ]; then
         echo
         echo "============ Orchestrator 编排面板（管理所有容器） ============"
+        grep '^ORCH_USERNAME=' "$GEN_DIR/orch.env" 2>/dev/null \
+            | sed 's/^/  /'
         grep '^ORCH_PASSWORD=' "$GEN_DIR/orch.env" 2>/dev/null \
             | sed 's/^/  /'
         local port="${CHAT2API_GATEWAY_PORT:-60403}"

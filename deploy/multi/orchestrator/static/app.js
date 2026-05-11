@@ -289,6 +289,56 @@ $('#btn-close-secret').addEventListener('click', () => {
     $('#secret-body').innerHTML = '';   // 立即清屏
 });
 
+// ---------- 管理中心 ----------
+
+async function openAdminCenter() {
+    $('#admin-center-error').classList.add('hidden');
+    $('#admin-center-error').textContent = '';
+    $('#admin-current-password').value = '';
+    $('#admin-new-password').value = '';
+    $('#modal-admin-center').classList.remove('hidden');
+    $('#modal-admin-center').classList.add('flex');
+    try {
+        const d = await api('GET', '/api/orchestrator/account');
+        $('#admin-username').value = d.username || 'admin';
+    } catch (e) {
+        $('#admin-center-error').textContent = e.message;
+        $('#admin-center-error').classList.remove('hidden');
+    }
+}
+
+function closeAdminCenter() {
+    $('#modal-admin-center').classList.add('hidden');
+    $('#modal-admin-center').classList.remove('flex');
+}
+
+$('#btn-admin-center').addEventListener('click', openAdminCenter);
+$('#btn-close-admin-center').addEventListener('click', closeAdminCenter);
+$('#btn-cancel-admin-center').addEventListener('click', closeAdminCenter);
+
+$('#admin-center-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('#btn-save-admin-center');
+    btn.disabled = true;
+    btn.textContent = '保存中...';
+    $('#admin-center-error').classList.add('hidden');
+    try {
+        await api('PATCH', '/api/orchestrator/account', {
+            username: $('#admin-username').value.trim(),
+            current_password: $('#admin-current-password').value,
+            new_password: $('#admin-new-password').value,
+        });
+        toast('已更新，请重新登录');
+        setTimeout(() => { location.href = './login'; }, 600);
+    } catch (e) {
+        $('#admin-center-error').textContent = e.message;
+        $('#admin-center-error').classList.remove('hidden');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '保存';
+    }
+});
+
 // ---------- 审计 ----------
 
 $('#btn-audit').addEventListener('click', async () => {

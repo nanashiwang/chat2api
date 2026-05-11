@@ -466,14 +466,17 @@ def ensure_orch_env() -> tuple[str, bool]:
     """
     if ORCH_ENV.exists():
         env = parse_env_file(ORCH_ENV)
+        username = env.get("ORCH_USERNAME", "")
         pwd = env.get("ORCH_PASSWORD", "")
         secret = env.get("ORCH_SESSION_SECRET", "")
         if pwd and secret:
             return pwd, False
+    username = "admin"
     pwd = gen_admin_password()
     secret = pysecrets.token_hex(32)
     body = (
         "# 自动生成 — orchestrator 凭证（generate.py 维护）\n"
+        f"ORCH_USERNAME={username}\n"
         f"ORCH_PASSWORD={pwd}\n"
         f"ORCH_SESSION_SECRET={secret}\n"
     )
@@ -534,6 +537,7 @@ def main() -> int:
         sys.stdout.write(
             "\n"
             "============================================================\n"
+            "  Orchestrator 首次访问用户名：admin\n"
             f"  Orchestrator 首次访问密码：{orch_first_pwd}\n"
             "  请立即记录！可通过 ./manage.sh orch-password 重置\n"
             "  访问入口：http://<vps>:{port}/orchestrator/\n"

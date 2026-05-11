@@ -61,6 +61,7 @@ ORCH_ENV = WORK / "generated" / "orch.env"
 DATA_DIR = WORK / "data"
 AUDIT_FILE = WORK / "audit.jsonl"
 
+USERNAME = (os.environ.get("ORCH_USERNAME") or "admin").strip() or "admin"
 PASSWORD = (os.environ.get("ORCH_PASSWORD") or "").strip()
 SESSION_SECRET = (os.environ.get("ORCH_SESSION_SECRET") or "").strip()
 SESSION_MAX_AGE = 8 * 3600  # 8h
@@ -74,6 +75,7 @@ if not PASSWORD or not SESSION_SECRET:
 
 SLUG_RE = re.compile(r"^[a-z0-9-]{1,16}$")
 PROXY_RE = re.compile(r"^(socks5|socks5h|http|https)://[^\s]+$")
+ORCH_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
 
 LOG_LEVEL = os.environ.get("ORCH_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -210,6 +212,29 @@ def read_env_file(path: Path) -> dict[str, str]:
         k, v = line.split("=", 1)
         out[k.strip()] = v.strip()
     return out
+
+
+def write_env_file(path: Path, values: dict[str, str]) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        for key, value in values.items():
+            f.write(f"{key}={value}\n")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+
+
+def orch_credentials() -> dict[str, str]:
+    env = read_env_file(ORCH_ENV)
+    username = (env.get("ORCH_USERNAME") or USERNAME or "admin").strip() or "admin"
+    password = (env.get("ORCH_PASSWORD") or PASSWORD).strip()
+    secret = (env.get("ORCH_SESSION_SECRET") or SESSION_SECRET).strip()
+    version = hashlib.sha256(f"{username}\0{password}".encode("utf-8")).hexdigest()[:16]
+    return {
+        "username": username,
+        "password": password,
+        "secret": secret,
+        "version": version,
+    }
 
 
 def mask_proxy(url: str) -> str:
@@ -349,8 +374,8 @@ def read_container_logs(container: str, tail: int = 80) -> tuple[bool, str]:
 
 # ---------- 鉴权 ----------
 
-def issue_session_token() -> str:
-    return serializer.dumps({"u": "admin"})
+def issue_session_token(username: str, version: str) -> str:
+    return serializer.dumps({"u": username, "v": version})
 
 
 def verify_session_token(token: str | None) -> bool:
@@ -358,7 +383,12 @@ def verify_session_token(token: str | None) -> bool:
         return False
     try:
         data = serializer.loads(token, max_age=SESSION_MAX_AGE)
-        return isinstance(data, dict) and data.get("u") == "admin"
+        creds = orch_credentials()
+        return (
+            isinstance(data, dict)
+            and data.get("u") == creds["username"]
+            and data.get("v") == creds["version"]
+        )
     except (BadSignature, SignatureExpired):
         return False
 
@@ -416,6 +446,7 @@ async def login_page(request: Request) -> HTMLResponse:
 async def login(
     request: Request,
     response: Response,
+    username: str = Form("admin"),
     password: str = Form(...),
 ) -> Response:
     ip = request.client.host if request.client else "?"
@@ -426,16 +457,20 @@ async def login(
             {"request": request, "error": "尝试过多，请稍候再试"},
             status_code=429,
         )
-    if not pysecrets.compare_digest(password, PASSWORD):
+    creds = orch_credentials()
+    if (
+        not pysecrets.compare_digest(username.strip(), creds["username"])
+        or not pysecrets.compare_digest(password, creds["password"])
+    ):
         record_login_failure(ip)
-        audit("login", request, False, reason="bad_password")
+        audit("login", request, False, reason="bad_credentials", username=username[:80])
         return templates.TemplateResponse(
             "login.html",
-            {"request": request, "error": "密码错误"},
+            {"request": request, "error": "用户名或密码错误", "username": username},
             status_code=401,
         )
 
-    token = issue_session_token()
+    token = issue_session_token(creds["username"], creds["version"])
     csrf = gen_csrf()
     is_https = request.url.scheme == "https" or \
         request.headers.get("x-forwarded-proto") == "https"
@@ -450,7 +485,7 @@ async def login(
         max_age=SESSION_MAX_AGE,
         httponly=False, samesite="strict", secure=is_https, path="/",
     )
-    audit("login", request, True)
+    audit("login", request, True, username=creds["username"])
     return resp
 
 
@@ -513,6 +548,64 @@ class AccountPatch(BaseModel):
         if v and not PROXY_RE.match(v):
             raise ValueError("proxy_url 必须以 socks5/socks5h/http/https:// 开头")
         return v
+
+
+class OrchestratorCredentialPatch(BaseModel):
+    username: str
+    current_password: str
+    new_password: str
+
+    @field_validator("username")
+    @classmethod
+    def _username(cls, v: str) -> str:
+        v = v.strip()
+        if not ORCH_USERNAME_RE.match(v):
+            raise ValueError("用户名需 3-64 位，仅支持字母、数字、_.@-")
+        return v
+
+    @field_validator("current_password")
+    @classmethod
+    def _current_password(cls, v: str) -> str:
+        if not v or "\n" in v or "\r" in v:
+            raise ValueError("当前密码必填")
+        return v
+
+    @field_validator("new_password")
+    @classmethod
+    def _new_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("新密码至少 8 位")
+        if "\n" in v or "\r" in v:
+            raise ValueError("新密码不能包含换行")
+        return v
+
+
+@app.get("/api/orchestrator/account", dependencies=[Depends(require_session)])
+async def api_orchestrator_account() -> JSONResponse:
+    creds = orch_credentials()
+    return JSONResponse({"username": creds["username"]})
+
+
+@app.patch(
+    "/api/orchestrator/account",
+    dependencies=[Depends(require_session), Depends(require_csrf)],
+)
+async def api_update_orchestrator_account(
+    payload: OrchestratorCredentialPatch,
+    request: Request,
+) -> JSONResponse:
+    creds = orch_credentials()
+    if not pysecrets.compare_digest(payload.current_password, creds["password"]):
+        audit("update_orchestrator_account", request, False, reason="bad_current_password")
+        raise HTTPException(status_code=403, detail="当前密码错误")
+
+    env = read_env_file(ORCH_ENV)
+    env["ORCH_USERNAME"] = payload.username
+    env["ORCH_PASSWORD"] = payload.new_password
+    env["ORCH_SESSION_SECRET"] = env.get("ORCH_SESSION_SECRET") or creds["secret"]
+    write_env_file(ORCH_ENV, env)
+    audit("update_orchestrator_account", request, True, username=payload.username)
+    return JSONResponse({"ok": True, "username": payload.username, "relogin": True})
 
 
 @app.get("/api/accounts", dependencies=[Depends(require_session)])
