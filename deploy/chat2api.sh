@@ -56,6 +56,10 @@ is_multi_install() {
   [[ -x "$INSTALL_DIR/deploy/multi/manage.sh" ]]
 }
 
+is_multi_generated() {
+  [[ -f "$INSTALL_DIR/deploy/multi/generated/docker-compose.yml" ]]
+}
+
 run_multi_manage() {
   (cd "$INSTALL_DIR/deploy/multi" && ./manage.sh "$@")
 }
@@ -157,6 +161,21 @@ run_compose() {
   fi
 }
 
+stop_single_compose_if_present() {
+  if [[ -f "$INSTALL_DIR/docker-compose.yml" || -f "$INSTALL_DIR/compose.yml" || -f "$INSTALL_DIR/compose.yaml" ]]; then
+    run_compose down --remove-orphans
+    return
+  fi
+  return 1
+}
+
+remove_known_chat2api_containers() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  docker rm -f chat2api watchtower c2a-nginx c2a-orchestrator c2a-watchtower >/dev/null 2>&1 || true
+}
+
 confirm_uninstall() {
   local keep_data="$1"
   if [[ "${CHAT2API_UNINSTALL_CONFIRM:-}" == "yes" ]]; then
@@ -221,13 +240,16 @@ cmd_uninstall() {
   fi
 
   echo "[*] Stopping chat2api services..."
-  if is_multi_install; then
+  if is_multi_install && is_multi_generated; then
     if ! run_multi_manage down; then
       echo "[!] Failed to stop multi-instance services; uninstall aborted."
       return 1
     fi
-  else
-    if ! run_compose down --remove-orphans; then
+  elif ! stop_single_compose_if_present; then
+    if is_multi_install; then
+      echo "[*] Multi-instance config is not generated; removing known chat2api containers..."
+      remove_known_chat2api_containers
+    else
       echo "[!] Failed to stop services; uninstall aborted."
       return 1
     fi

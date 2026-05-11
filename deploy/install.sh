@@ -123,6 +123,19 @@ shell_escape() {
     printf "%s" "$1" | sed "s/'/'\\\\''/g"
 }
 
+cleanup_single_instance_for_multi() {
+    if [ "$CHAT2API_MODE" != "multi" ]; then
+        return 0
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+        return 0
+    fi
+    if docker ps -a --format '{{.Names}}' | grep -qx 'chat2api'; then
+        log "检测到旧单实例容器占用端口，先停止并移除..."
+        docker rm -f chat2api >/dev/null 2>&1 || true
+    fi
+}
+
 sync_deploy_assets() {
     if [ -x "$INSTALL_DIR/deploy/multi/manage.sh" ] && [ -f "$INSTALL_DIR/deploy/chat2api.sh" ]; then
         return 0
@@ -206,6 +219,7 @@ EOF
 }
 
 sync_deploy_assets
+cleanup_single_instance_for_multi
 
 if [ "$CHAT2API_MODE" = "multi" ]; then
     if [ ! -x "$INSTALL_DIR/deploy/multi/manage.sh" ]; then
