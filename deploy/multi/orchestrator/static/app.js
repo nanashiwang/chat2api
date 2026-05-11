@@ -105,6 +105,9 @@ function renderRows(instances) {
             <td class="px-4 py-2 text-xs text-gray-500">${fmtUptime(it.uptime_seconds)}</td>
             <td class="px-4 py-2 text-xs">${fmtCookieAge(it.cookie_last_success_at)}</td>
             <td class="px-4 py-2 text-xs text-gray-600">${escapeHtml(it.note || '-')}</td>
+            <td class="px-4 py-2">
+                <button class="row-action-btn text-indigo-600 font-medium" data-action="invoke" data-slug="${escapeHtml(it.slug)}">📡 调用</button>
+            </td>
             <td class="px-4 py-2 text-right whitespace-nowrap">
                 <button class="row-action-btn text-blue-600" data-action="secret" data-slug="${escapeHtml(it.slug)}">凭证</button>
                 <button class="row-action-btn text-gray-700" data-action="edit" data-slug="${escapeHtml(it.slug)}" data-proxy="${escapeHtml(it.proxy_masked || '')}" data-note="${escapeHtml(it.note || '')}">编辑</button>
@@ -201,6 +204,10 @@ async function onRowAction({ action, slug, proxy, note }) {
         await showSecret(slug);
         return;
     }
+    if (action === 'invoke') {
+        await openInvokeModal(slug);
+        return;
+    }
     if (action === 'delete') {
         if (!confirm(`确认删除 ${slug}？\n容器将被销毁，data/${slug}/ 会保留。`)) return;
         try {
@@ -289,6 +296,358 @@ $('#btn-close-audit').addEventListener('click', () => {
     $('#modal-audit').classList.add('hidden');
     $('#modal-audit').classList.remove('flex');
 });
+
+// ---------- 调用信息 (单实例) ----------
+
+let invokeCurrent = null;   // 当前 modal 展示的 info dict
+let invokeSnippetTab = 'curl';
+
+const PLAN_COLOR_CLASS = {
+    free: 'bg-gray-200 text-gray-700',
+    plus: 'bg-blue-100 text-blue-700',
+    team: 'bg-emerald-100 text-emerald-700',
+    pro: 'bg-amber-100 text-amber-700',
+    enterprise: 'bg-violet-100 text-violet-700',
+    unknown: 'bg-rose-100 text-rose-700',
+};
+
+function absoluteBaseUrl(rawBaseUrl) {
+    if (!rawBaseUrl) return '';
+    if (/^https?:\/\//.test(rawBaseUrl)) return rawBaseUrl;
+    // 相对路径 → 拼当前 origin
+    return location.origin + (rawBaseUrl.startsWith('/') ? rawBaseUrl : '/' + rawBaseUrl);
+}
+
+function genSnippets(baseUrl, apiKey, model) {
+    const url = (baseUrl || '').replace(/\/$/, '');
+    const k = apiKey || 'YOUR_API_KEY';
+    const m = model || 'gpt-4o-mini';
+    return {
+        curl: `curl ${url}/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${k}" \\
+  -d '{
+    "model": "${m}",
+    "messages": [{"role":"user","content":"Hello"}]
+  }'`,
+        python: `from openai import OpenAI
+
+client = OpenAI(
+    base_url="${url}",
+    api_key="${k}",
+)
+resp = client.chat.completions.create(
+    model="${m}",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(resp.choices[0].message.content)`,
+        node: `import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "${url}",
+  apiKey: "${k}",
+});
+
+const resp = await client.chat.completions.create({
+  model: "${m}",
+  messages: [{ role: "user", content: "Hello" }],
+});
+console.log(resp.choices[0].message.content);`,
+    };
+}
+
+async function copyToClipboard(text, btn) {
+    try {
+        await navigator.clipboard.writeText(text);
+        const orig = btn.textContent;
+        btn.textContent = '✓ 已复制';
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+    } catch (e) {
+        toast('复制失败：' + e.message, true);
+    }
+}
+
+function renderModelChips(models, sourceHint) {
+    const wrap = $('#invoke-models-chips');
+    if (!models || !models.length) {
+        wrap.innerHTML = '<span class="text-xs text-gray-400">无可用模型</span>';
+    } else {
+        wrap.innerHTML = models.map(m => {
+            const sourceTag = m.source === 'probe'
+                ? '<span class="ml-1 text-[10px] text-emerald-600">实测</span>'
+                : '';
+            return `<span class="model-chip">${escapeHtml(m.id)}${sourceTag}</span>`;
+        }).join('');
+    }
+    $('#invoke-models-source-hint').textContent = sourceHint || '';
+}
+
+function renderInvokeSnippet() {
+    if (!invokeCurrent) return;
+    const baseUrl = absoluteBaseUrl(invokeCurrent.base_url);
+    const firstModel = (invokeCurrent.models && invokeCurrent.models[0] && invokeCurrent.models[0].id) || 'gpt-4o-mini';
+    // 注意：因为后端没下发原文 auth，前端代码示例里只能填 masked key。提示用户从「凭证」按钮取原文。
+    const apiKey = invokeCurrent.auth_masked || 'YOUR_API_KEY';
+    const snippets = genSnippets(baseUrl, apiKey, firstModel);
+    $('#invoke-snippet').textContent = snippets[invokeSnippetTab] || snippets.curl;
+}
+
+async function openInvokeModal(slug) {
+    $('#invoke-slug-label').textContent = slug;
+    $('#invoke-base-url').textContent = '加载中...';
+    $('#invoke-auth-key').textContent = '加载中...';
+    $('#invoke-plan').textContent = '...';
+    $('#invoke-plan-source').textContent = '';
+    $('#invoke-cached-state').textContent = '';
+    $('#invoke-models-chips').innerHTML = '';
+    $('#invoke-snippet').textContent = '';
+    $('#modal-invoke').classList.remove('hidden');
+    $('#modal-invoke').classList.add('flex');
+
+    try {
+        const info = await api('GET', '/api/instances/' + encodeURIComponent(slug) + '/info');
+        invokeCurrent = info;
+        $('#invoke-base-url').textContent = absoluteBaseUrl(info.base_url) || '(未配置)';
+        $('#invoke-auth-key').textContent = info.auth_masked || '(空)';
+        const planEl = $('#invoke-plan');
+        planEl.textContent = info.plan_label || info.plan_type || 'unknown';
+        planEl.className = 'inline-block px-2 py-1 rounded text-xs ' + (PLAN_COLOR_CLASS[info.plan_type] || PLAN_COLOR_CLASS.unknown);
+        $('#invoke-plan-source').textContent = info.plan_source === 'jwt' ? '(从 JWT 解析)' : '(无 token, 默认 unknown)';
+        $('#invoke-cached-state').textContent = info.cached ? '✓ 使用 5min 缓存' : '✓ 新生成';
+        renderModelChips(info.models, '(套餐默认表)');
+        invokeSnippetTab = 'curl';
+        $$('.snippet-tab').forEach(b => {
+            const active = b.dataset.snippet === 'curl';
+            b.classList.toggle('border-blue-600', active);
+            b.classList.toggle('text-blue-600', active);
+            b.classList.toggle('border-transparent', !active);
+            b.classList.toggle('text-gray-500', !active);
+        });
+        renderInvokeSnippet();
+    } catch (e) {
+        $('#invoke-base-url').textContent = '加载失败';
+        toast('加载调用信息失败：' + e.message, true);
+    }
+}
+
+function closeInvokeModal() {
+    $('#modal-invoke').classList.add('hidden');
+    $('#modal-invoke').classList.remove('flex');
+    invokeCurrent = null;
+}
+
+$('#btn-close-invoke').addEventListener('click', closeInvokeModal);
+
+// 实时探测按钮
+$('#btn-probe-models').addEventListener('click', async () => {
+    if (!invokeCurrent) return;
+    const slug = invokeCurrent.slug;
+    const btn = $('#btn-probe-models');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '探测中...';
+    try {
+        const d = await api('POST', '/api/instances/' + encodeURIComponent(slug) + '/probe-models', {});
+        const models = (d.models || []).map(id => ({ id, source: 'probe' }));
+        if (invokeCurrent) {
+            invokeCurrent.models = models;
+            renderModelChips(models, '(实测 @ ' + new Date(d.probed_at * 1000).toLocaleTimeString() + ')');
+            renderInvokeSnippet();   // 用新的第一个 model 刷新代码示例
+        }
+        toast('探测成功：' + models.length + ' 个模型');
+        // 30s 内置灰
+        btn.textContent = '⏳ 30s 冷却中';
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }, 30000);
+    } catch (e) {
+        toast('探测失败：' + e.message, true);
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+});
+
+// snippet tab 切换
+$$('.snippet-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+        invokeSnippetTab = btn.dataset.snippet;
+        $$('.snippet-tab').forEach(b => {
+            const active = b === btn;
+            b.classList.toggle('border-blue-600', active);
+            b.classList.toggle('text-blue-600', active);
+            b.classList.toggle('border-transparent', !active);
+            b.classList.toggle('text-gray-500', !active);
+        });
+        renderInvokeSnippet();
+    });
+});
+
+// 通用 copy 按钮事件委托
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.copy-btn');
+    if (!btn) return;
+    const targetId = btn.dataset.copyTarget;
+    if (!targetId) return;
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    const text = el.tagName === 'PRE' ? el.textContent : el.textContent.trim();
+    copyToClipboard(text, btn);
+});
+
+// ---------- 调用汇总（跨实例）+ 导出 ----------
+
+async function openSummaryModal() {
+    $('#summary-body').innerHTML = '<tr><td colspan="6" class="px-3 py-6 text-center text-gray-400">加载中...</td></tr>';
+    $('#summary-empty').classList.add('hidden');
+    $('#modal-summary').classList.remove('hidden');
+    $('#modal-summary').classList.add('flex');
+    try {
+        const d = await api('GET', '/api/instances/aggregate');
+        const rows = d.instances || [];
+        if (!rows.length) {
+            $('#summary-body').innerHTML = '';
+            $('#summary-empty').classList.remove('hidden');
+            return;
+        }
+        $('#summary-body').innerHTML = rows.map(r => {
+            const endpoint = absoluteBaseUrl(r.base_url) || '(未配置)';
+            const planClass = PLAN_COLOR_CLASS[r.plan_type] || PLAN_COLOR_CLASS.unknown;
+            const health = r.container_state === 'running'
+                ? (r.container_health === 'healthy'
+                    ? '<span class="text-green-600">● healthy</span>'
+                    : '<span class="text-yellow-600">● ' + escapeHtml(r.container_health || '?') + '</span>')
+                : '<span class="text-gray-400">○ ' + escapeHtml(r.container_state || 'absent') + '</span>';
+            return `
+                <tr class="border-t border-gray-100 hover:bg-gray-50">
+                    <td class="px-3 py-2 font-medium kbd-row">${escapeHtml(r.slug)}</td>
+                    <td class="px-3 py-2"><span class="inline-block px-2 py-0.5 rounded text-xs ${planClass}">${escapeHtml(r.plan_label || r.plan_type)}</span></td>
+                    <td class="px-3 py-2 text-xs text-gray-600 kbd-row break-all">${escapeHtml(endpoint)}</td>
+                    <td class="px-3 py-2 text-xs text-gray-600 kbd-row">${escapeHtml(r.auth_masked || '-')}</td>
+                    <td class="px-3 py-2 text-xs">${(r.models || []).length}</td>
+                    <td class="px-3 py-2 text-xs">${health}</td>
+                </tr>
+            `;
+        }).join('');
+    } catch (e) {
+        $('#summary-body').innerHTML = `<tr><td colspan="6" class="px-3 py-6 text-center text-red-500">加载失败：${escapeHtml(e.message)}</td></tr>`;
+    }
+}
+
+function exportConfig(fmt) {
+    // 触发文件下载：浏览器会保留 session cookie，FastAPI Response 带 Content-Disposition
+    window.location.href = './api/export/' + encodeURIComponent(fmt);
+    toast('开始下载 ' + fmt + ' 配置');
+}
+
+$('#btn-summary').addEventListener('click', openSummaryModal);
+$('#btn-close-summary').addEventListener('click', () => {
+    $('#modal-summary').classList.add('hidden');
+    $('#modal-summary').classList.remove('flex');
+});
+
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-export');
+    if (!btn) return;
+    const fmt = btn.dataset.fmt;
+    if (fmt) exportConfig(fmt);
+});
+
+// ---------- Playground 试调用 ----------
+
+let pgInstances = [];   // 缓存 options 返回值
+
+async function openPlaygroundModal() {
+    $('#modal-playground').classList.remove('hidden');
+    $('#modal-playground').classList.add('flex');
+    $('#pg-result').classList.add('hidden');
+    $('#pg-result-error').classList.add('hidden');
+    try {
+        const d = await api('GET', '/api/playground/options');
+        pgInstances = d.instances || [];
+        const slugSel = $('#pg-slug');
+        if (!pgInstances.length) {
+            slugSel.innerHTML = '<option value="">(无实例)</option>';
+            $('#pg-model').innerHTML = '';
+            return;
+        }
+        slugSel.innerHTML = pgInstances.map(it =>
+            `<option value="${escapeHtml(it.slug)}">${escapeHtml(it.slug)} · ${escapeHtml(it.plan_label || it.plan_type)}</option>`
+        ).join('');
+        renderPgModels();
+    } catch (e) {
+        toast('加载实例列表失败：' + e.message, true);
+    }
+}
+
+function renderPgModels() {
+    const slug = $('#pg-slug').value;
+    const inst = pgInstances.find(x => x.slug === slug);
+    const models = inst ? (inst.models || []) : [];
+    $('#pg-model').innerHTML = models.length
+        ? models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('')
+        : '<option value="">(无模型)</option>';
+}
+
+async function runPlayground() {
+    const slug = $('#pg-slug').value;
+    const model = $('#pg-model').value;
+    const system = $('#pg-system').value;
+    const user = $('#pg-user').value.trim();
+    const temperature = parseFloat($('#pg-temp').value);
+    const max_tokens = parseInt($('#pg-max-tokens').value, 10);
+
+    if (!slug || !model) { toast('请先选择实例与模型', true); return; }
+    if (!user) { toast('user prompt 不能为空', true); return; }
+
+    const btn = $('#btn-pg-run');
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="pg-loading-spinner"></span>运行中...';
+    $('#pg-result').classList.remove('hidden');
+    $('#pg-result-status').textContent = '...';
+    $('#pg-result-latency').textContent = '...';
+    $('#pg-result-usage').textContent = '...';
+    $('#pg-result-content').textContent = '';
+    $('#pg-result-error').classList.add('hidden');
+
+    try {
+        const d = await api('POST', '/api/playground/invoke', {
+            slug, model, system, user, temperature, max_tokens
+        });
+        $('#pg-result-latency').textContent = (d.latency_ms || 0) + 'ms';
+        if (d.ok) {
+            $('#pg-result-status').innerHTML = '<span class="text-green-600">✓ 200</span>';
+            const u = d.usage || {};
+            $('#pg-result-usage').textContent = `${u.prompt_tokens || '-'} + ${u.completion_tokens || '-'} = ${u.total_tokens || '-'}`;
+            $('#pg-result-content').textContent = d.content || '(空响应)';
+        } else {
+            $('#pg-result-status').innerHTML = `<span class="text-red-600">✗ ${escapeHtml(String(d.status || '?'))}</span>`;
+            $('#pg-result-usage').textContent = '-';
+            $('#pg-result-content').textContent = '';
+            $('#pg-result-error').textContent = typeof d.error === 'string' ? d.error : JSON.stringify(d.error);
+            $('#pg-result-error').classList.remove('hidden');
+        }
+    } catch (e) {
+        $('#pg-result-status').innerHTML = '<span class="text-red-600">✗ 异常</span>';
+        $('#pg-result-error').textContent = e.message;
+        $('#pg-result-error').classList.remove('hidden');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+    }
+}
+
+$('#btn-playground').addEventListener('click', openPlaygroundModal);
+$('#btn-close-playground').addEventListener('click', () => {
+    $('#modal-playground').classList.add('hidden');
+    $('#modal-playground').classList.remove('flex');
+});
+$('#pg-slug').addEventListener('change', renderPgModels);
+$('#pg-temp').addEventListener('input', () => {
+    $('#pg-temp-label').textContent = $('#pg-temp').value;
+});
+$('#btn-pg-run').addEventListener('click', runPlayground);
 
 // ---------- 启动 ----------
 

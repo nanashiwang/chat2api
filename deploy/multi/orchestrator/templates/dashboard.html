@@ -16,6 +16,8 @@
             <p class="text-xs text-gray-500" id="server-status">加载中...</p>
         </div>
         <div class="flex items-center gap-2">
+            <button id="btn-summary" class="text-sm px-3 py-1.5 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded">📊 调用汇总</button>
+            <button id="btn-playground" class="text-sm px-3 py-1.5 bg-pink-100 hover:bg-pink-200 text-pink-700 rounded">🎮 试调用</button>
             <button id="btn-refresh" class="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded">刷新</button>
             <button id="btn-audit" class="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded">审计日志</button>
             <form method="POST" action="./logout" class="inline">
@@ -42,11 +44,12 @@
                     <th class="px-4 py-2 text-left">运行时长</th>
                     <th class="px-4 py-2 text-left">cookie 鲜度</th>
                     <th class="px-4 py-2 text-left">备注</th>
+                    <th class="px-4 py-2 text-left">调用</th>
                     <th class="px-4 py-2 text-right">操作</th>
                 </tr>
             </thead>
             <tbody id="tbody">
-                <tr><td colspan="8" class="px-4 py-8 text-center text-gray-400">加载中...</td></tr>
+                <tr><td colspan="9" class="px-4 py-8 text-center text-gray-400">加载中...</td></tr>
             </tbody>
         </table>
     </div>
@@ -111,6 +114,153 @@
                 </thead>
                 <tbody id="audit-body"></tbody>
             </table>
+        </div>
+    </div>
+</div>
+
+<!-- 模态：单实例调用信息 -->
+<div id="modal-invoke" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+        <div class="flex items-center justify-between p-4 border-b">
+            <h3 class="text-lg font-semibold">📡 调用信息 <span id="invoke-slug-label" class="text-blue-600"></span></h3>
+            <button id="btn-close-invoke" class="text-gray-400 hover:text-gray-600">×</button>
+        </div>
+        <div class="overflow-auto flex-1 p-5 space-y-4">
+            <!-- 基础调用信息 -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                <div>
+                    <div class="text-xs text-gray-500 mb-1">base_url</div>
+                    <div class="flex gap-2">
+                        <code id="invoke-base-url" class="bg-gray-100 px-2 py-1 rounded text-xs break-all flex-1"></code>
+                        <button class="copy-btn text-xs px-2 py-1 bg-blue-600 text-white rounded" data-copy-target="invoke-base-url">复制</button>
+                    </div>
+                </div>
+                <div>
+                    <div class="text-xs text-gray-500 mb-1">api_key (Authorization)</div>
+                    <div class="flex gap-2">
+                        <code id="invoke-auth-key" class="bg-gray-100 px-2 py-1 rounded text-xs break-all flex-1"></code>
+                        <button class="copy-btn text-xs px-2 py-1 bg-blue-600 text-white rounded" data-copy-target="invoke-auth-key">复制</button>
+                    </div>
+                </div>
+                <div>
+                    <div class="text-xs text-gray-500 mb-1">账号套餐</div>
+                    <div><span id="invoke-plan" class="inline-block px-2 py-1 rounded text-xs"></span> <span id="invoke-plan-source" class="text-xs text-gray-400"></span></div>
+                </div>
+                <div>
+                    <div class="text-xs text-gray-500 mb-1">缓存状态</div>
+                    <div id="invoke-cached-state" class="text-xs text-gray-500"></div>
+                </div>
+            </div>
+
+            <!-- 模型 chip -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <div class="text-xs text-gray-500">可用模型 <span id="invoke-models-source-hint" class="text-gray-400"></span></div>
+                    <button id="btn-probe-models" class="text-xs px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded">🔄 实时探测</button>
+                </div>
+                <div id="invoke-models-chips" class="flex flex-wrap gap-1.5"></div>
+            </div>
+
+            <!-- 代码示例（tabs）-->
+            <div>
+                <div class="flex gap-1 border-b mb-2">
+                    <button class="snippet-tab text-xs px-3 py-1.5 border-b-2 border-blue-600 text-blue-600" data-snippet="curl">curl</button>
+                    <button class="snippet-tab text-xs px-3 py-1.5 border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-snippet="python">Python</button>
+                    <button class="snippet-tab text-xs px-3 py-1.5 border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-snippet="node">Node.js</button>
+                </div>
+                <div class="relative">
+                    <pre id="invoke-snippet" class="code-block bg-gray-900 text-gray-100 p-3 rounded text-xs overflow-auto max-h-60"></pre>
+                    <button class="copy-btn absolute top-2 right-2 text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded" data-copy-target="invoke-snippet">复制</button>
+                </div>
+                <div class="text-xs text-gray-400 mt-1">使用第一个模型作为示例；可在 playground 选其它模型测试</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 模态：调用汇总（跨实例看板 + 导出）-->
+<div id="modal-summary" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col">
+        <div class="flex items-center justify-between p-4 border-b">
+            <h3 class="text-lg font-semibold">📊 调用汇总</h3>
+            <button id="btn-close-summary" class="text-gray-400 hover:text-gray-600">×</button>
+        </div>
+        <div class="overflow-auto flex-1 p-4">
+            <table class="w-full text-sm">
+                <thead class="text-xs uppercase text-gray-500 bg-gray-50">
+                    <tr>
+                        <th class="px-3 py-2 text-left">slug</th>
+                        <th class="px-3 py-2 text-left">套餐</th>
+                        <th class="px-3 py-2 text-left">endpoint</th>
+                        <th class="px-3 py-2 text-left">api_key</th>
+                        <th class="px-3 py-2 text-left">模型数</th>
+                        <th class="px-3 py-2 text-left">健康</th>
+                    </tr>
+                </thead>
+                <tbody id="summary-body"></tbody>
+            </table>
+            <div id="summary-empty" class="hidden text-center text-gray-400 py-8 text-sm">尚无任何实例</div>
+        </div>
+        <div class="p-4 border-t bg-gray-50 flex items-center justify-between flex-wrap gap-2">
+            <div class="text-xs text-gray-500">⚠️ 导出文件包含真实 api_key，下载后请妥善保管</div>
+            <div class="flex gap-2">
+                <button class="btn-export text-sm px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded" data-fmt="litellm">⬇ LiteLLM</button>
+                <button class="btn-export text-sm px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded" data-fmt="oneapi">⬇ OneAPI</button>
+                <button class="btn-export text-sm px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded" data-fmt="librechat">⬇ LibreChat</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 模态：Playground 试调用 -->
+<div id="modal-playground" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[92vh] flex flex-col">
+        <div class="flex items-center justify-between p-4 border-b">
+            <h3 class="text-lg font-semibold">🎮 Playground 试调用</h3>
+            <button id="btn-close-playground" class="text-gray-400 hover:text-gray-600">×</button>
+        </div>
+        <div class="overflow-auto flex-1 p-4 space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">实例</label>
+                    <select id="pg-slug" class="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"></select>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">模型</label>
+                    <select id="pg-model" class="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"></select>
+                </div>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">system prompt（可空）</label>
+                <textarea id="pg-system" rows="2" class="w-full px-2 py-1.5 border border-gray-300 rounded text-sm font-mono" placeholder="You are a helpful assistant."></textarea>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">user prompt <span class="text-red-500">*</span></label>
+                <textarea id="pg-user" rows="4" class="w-full px-2 py-1.5 border border-gray-300 rounded text-sm font-mono" placeholder="say hello in JSON format"></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">temperature: <span id="pg-temp-label">0.7</span></label>
+                    <input id="pg-temp" type="range" min="0" max="2" step="0.1" value="0.7" class="w-full">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">max_tokens (1–4096)</label>
+                    <input id="pg-max-tokens" type="number" min="1" max="4096" value="512" class="w-full px-2 py-1.5 border border-gray-300 rounded text-sm">
+                </div>
+            </div>
+            <div class="flex justify-end">
+                <button id="btn-pg-run" class="px-4 py-2 bg-pink-600 hover:bg-pink-700 text-white rounded text-sm">▶ 运行</button>
+            </div>
+            <!-- 结果 -->
+            <div id="pg-result" class="hidden border-t pt-3">
+                <div class="text-xs text-gray-500 mb-1 flex gap-3 flex-wrap">
+                    <span>状态: <span id="pg-result-status"></span></span>
+                    <span>延迟: <span id="pg-result-latency" class="font-mono"></span></span>
+                    <span>tokens: <span id="pg-result-usage" class="font-mono"></span></span>
+                </div>
+                <pre id="pg-result-content" class="code-block bg-gray-50 border border-gray-200 p-3 rounded text-xs overflow-auto max-h-72"></pre>
+                <div id="pg-result-error" class="hidden mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2"></div>
+            </div>
         </div>
     </div>
 </div>

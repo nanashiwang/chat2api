@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "updated_at": "2026-05-11",
+  "comment": "每个套餐能用的模型清单。OpenAI 改版后只需更新此文件，无需改 Python。plan_type 从 access_token JWT 的 chatgpt_plan_type 字段解码得到。",
+  "plans": {
+    "free": {
+      "label": "Free",
+      "color": "slate",
+      "models": ["gpt-4o-mini", "gpt-5-mini", "o4-mini"]
+    },
+    "plus": {
+      "label": "Plus",
+      "color": "blue",
+      "models": ["gpt-4o", "gpt-5", "gpt-5-thinking", "o4-mini", "o3", "gpt-4o-mini"]
+    },
+    "team": {
+      "label": "Team",
+      "color": "emerald",
+      "models": ["gpt-5", "gpt-5-thinking", "gpt-5-pro", "o3", "o4-mini", "gpt-4o"]
+    },
+    "pro": {
+      "label": "Pro",
+      "color": "amber",
+      "models": ["gpt-5-pro", "gpt-5-thinking", "o3-pro", "gpt-5", "o3", "gpt-4o"]
+    },
+    "enterprise": {
+      "label": "Enterprise",
+      "color": "violet",
+      "models": ["gpt-5", "gpt-5-thinking", "gpt-5-pro", "o3", "o4-mini", "gpt-4o"]
+    },
+    "unknown": {
+      "label": "未知",
+      "color": "rose",
+      "models": ["gpt-4o-mini"]
+    }
+  }
+}

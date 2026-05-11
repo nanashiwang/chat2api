@@ -12,3 +12,38 @@
 .dot-starting { background: #f59e0b; }
 .dot-na { background: #9ca3af; }
 .kbd-row { font-family: ui-monospace, SFMono-Regular, monospace; }
+
+/* 调用面板：模型 chip */
+.model-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.72rem;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    background: #eef2ff;
+    color: #4338ca;
+    border: 1px solid #c7d2fe;
+    border-radius: 9999px;
+    line-height: 1.2;
+}
+
+/* 调用面板：代码块 */
+.code-block {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    line-height: 1.45;
+    white-space: pre;
+}
+
+/* playground 加载 spinner */
+.pg-loading-spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid rgba(255,255,255,0.35);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: pg-spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 4px;
+}
+@keyframes pg-spin { to { transform: rotate(360deg); } }
+

@@ -12,7 +12,9 @@
 """
 from __future__ import annotations
 
+import base64
 import csv
+import functools
 import io
 import json
 import logging
@@ -25,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import (
     Cookie,
     Depends,
@@ -650,3 +653,509 @@ async def api_reveal_secret(slug: str, request: Request) -> JSONResponse:
 @app.get("/api/audit", dependencies=[Depends(require_session)])
 async def api_audit(limit: int = Query(200, ge=1, le=2000)) -> JSONResponse:
     return JSONResponse({"records": read_audit(limit)})
+
+
+# ====================================================================
+# 调用层信息聚合 (info / probe / playground / export)
+# ====================================================================
+
+MODELS_BY_PLAN_FILE = Path(__file__).parent / "static" / "models_by_plan.json"
+_models_cache: dict[str, tuple[dict, float]] = {}  # slug -> (info_dict, ts)
+INFO_CACHE_TTL = 300.0  # 5 分钟
+PROBE_MIN_INTERVAL = 30.0  # 单 slug 探测最小间隔
+_probe_last: dict[str, float] = {}
+
+
+@functools.lru_cache(maxsize=1)
+def _load_static_models() -> dict:
+    """读 static/models_by_plan.json；启动后只读一次（除非进程重启）。"""
+    try:
+        return json.loads(MODELS_BY_PLAN_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        logger.error("加载 models_by_plan.json 失败：%s", e)
+        return {"plans": {"unknown": {"label": "未知", "color": "rose", "models": []}}}
+
+
+def _parse_jwt_plan(access_token: str) -> str:
+    """从 OpenAI access_token JWT 的 payload 取 chatgpt_plan_type。
+
+    JWT 结构: header.payload.signature。payload 是 base64url 编码的 JSON，
+    里面 https://api.openai.com/auth.chatgpt_plan_type = "free"/"plus"/"team"/"pro"。
+    任何失败返回 "unknown"。
+    """
+    if not access_token or "." not in access_token:
+        return "unknown"
+    try:
+        payload_b64 = access_token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("ascii")))
+        auth_claims = payload.get("https://api.openai.com/auth") or {}
+        plan = (auth_claims.get("chatgpt_plan_type") or "").strip().lower()
+        return plan or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _read_latest_access_token(slug: str) -> str:
+    """读 data/{slug}/refresh_map.json，返回 last_success_at 最新那条的 token 字段。"""
+    p = DATA_DIR / slug / "refresh_map.json"
+    if not p.exists():
+        return ""
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return ""
+        latest: tuple[int, str] = (0, "")
+        for v in data.values():
+            if not isinstance(v, dict):
+                continue
+            ts = int(v.get("last_success_at") or v.get("timestamp") or 0)
+            tok = v.get("token") or ""
+            if ts > latest[0] and tok:
+                latest = (ts, tok)
+        return latest[1]
+    except Exception:
+        return ""
+
+
+def _get_instance_info(slug: str) -> dict:
+    """汇总实例的调用层信息（不含 AUTHORIZATION 原文，仅 masked）。"""
+    env = read_env_file(WORK / "generated" / "env" / f"{slug}.env")
+    api_prefix = env.get("API_PREFIX", "")
+    authorization = env.get("AUTHORIZATION", "")
+    # gateway 暴露在容器外端口 60403，nginx 反代到 c2a-{slug}:5005
+    # 这里给"对外可调用"的 URL；调用方自己拼 /v1
+    gateway_port = os.environ.get("ORCH_GATEWAY_PUBLIC_PORT", "60403")
+    gateway_host = os.environ.get("ORCH_GATEWAY_PUBLIC_HOST", "")
+    if gateway_host:
+        base_url = f"http://{gateway_host}:{gateway_port}/{api_prefix}/v1" if api_prefix else ""
+    else:
+        # 没配公开 host 就给相对路径，浏览器拼当前 origin
+        base_url = f"/{api_prefix}/v1" if api_prefix else ""
+
+    access_token = _read_latest_access_token(slug)
+    plan_type = _parse_jwt_plan(access_token) if access_token else "unknown"
+    static = _load_static_models()
+    plan_entry = static.get("plans", {}).get(plan_type) or static.get("plans", {}).get("unknown", {})
+    models = [{"id": m, "source": "plan"} for m in plan_entry.get("models", [])]
+
+    return {
+        "slug": slug,
+        "base_url": base_url,
+        "api_prefix": api_prefix,
+        "authorization": authorization,  # 内部端点返回原文，前端展示前 mask
+        "auth_masked": mask_secret(authorization, head=6, tail=4),
+        "plan_type": plan_type,
+        "plan_label": plan_entry.get("label", "未知"),
+        "plan_color": plan_entry.get("color", "rose"),
+        "plan_source": "jwt" if access_token else "default",
+        "models": models,
+        "generated_at": int(time.time()),
+    }
+
+
+@app.get(
+    "/api/instances/{slug}/info",
+    dependencies=[Depends(require_session)],
+)
+async def api_instance_info(slug: str) -> JSONResponse:
+    """单实例调用层信息（5min 缓存）。AUTHORIZATION 不下发，仅 masked。"""
+    if not SLUG_RE.match(slug):
+        raise HTTPException(status_code=400, detail="slug 不合法")
+    if not any(r["slug"] == slug for r in read_accounts()):
+        raise HTTPException(status_code=404, detail=f"slug={slug} 不存在")
+
+    now = time.time()
+    cached = _models_cache.get(slug)
+    if cached and now - cached[1] < INFO_CACHE_TTL:
+        info = cached[0]
+    else:
+        info = _get_instance_info(slug)
+        _models_cache[slug] = (info, now)
+
+    # 出口前再次剥离 AUTHORIZATION 原文，浏览器只见 masked
+    safe = {k: v for k, v in info.items() if k != "authorization"}
+    safe["cached"] = bool(cached and now - cached[1] < INFO_CACHE_TTL)
+    return JSONResponse(safe)
+
+
+async def _probe_models(slug: str, api_prefix: str, auth: str) -> list[str]:
+    """容器内网 GET c2a-{slug}:5005/{api_prefix}/v1/models，返回 model id 列表。
+
+    chat2api 的 /v1/models 是 OpenAI 兼容协议，返回 {"object":"list","data":[{"id":"...",...}]}。
+    认证用 AUTHORIZATION 作 Bearer token。
+    """
+    url = f"http://c2a-{slug}:5005/{api_prefix}/v1/models" if api_prefix else f"http://c2a-{slug}:5005/v1/models"
+    headers = {"Authorization": f"Bearer {auth}"} if auth else {}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(url, headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return []
+        return [str(it.get("id")) for it in items if isinstance(it, dict) and it.get("id")]
+
+
+@app.post(
+    "/api/instances/{slug}/probe-models",
+    dependencies=[Depends(require_session), Depends(require_csrf)],
+)
+async def api_probe_models(slug: str, request: Request) -> JSONResponse:
+    """强制调实例 /v1/models 取真实可用模型；单 slug 30s 限频；写审计。"""
+    if not SLUG_RE.match(slug):
+        raise HTTPException(status_code=400, detail="slug 不合法")
+    if not any(r["slug"] == slug for r in read_accounts()):
+        raise HTTPException(status_code=404, detail=f"slug={slug} 不存在")
+
+    now = time.time()
+    last = _probe_last.get(slug, 0)
+    if now - last < PROBE_MIN_INTERVAL:
+        wait = int(PROBE_MIN_INTERVAL - (now - last))
+        audit("probe_models", request, False, slug=slug, reason="rate_limited", wait_s=wait)
+        raise HTTPException(status_code=429, detail=f"探测过快，请 {wait}s 后再试")
+    _probe_last[slug] = now
+
+    env = read_env_file(WORK / "generated" / "env" / f"{slug}.env")
+    if not env:
+        audit("probe_models", request, False, slug=slug, reason="env_missing")
+        raise HTTPException(status_code=404, detail=f"slug={slug} env 不存在")
+
+    try:
+        model_ids = await _probe_models(slug, env.get("API_PREFIX", ""), env.get("AUTHORIZATION", ""))
+    except httpx.HTTPStatusError as e:
+        audit("probe_models", request, False, slug=slug, http_status=e.response.status_code)
+        raise HTTPException(status_code=502, detail=f"实例返回 {e.response.status_code}: {e.response.text[:200]}")
+    except Exception as e:
+        audit("probe_models", request, False, slug=slug, error=str(e)[:200])
+        raise HTTPException(status_code=500, detail=f"探测失败：{str(e)[:200]}")
+
+    # 把 probe 结果合入 cache（增量），保留 plan_type 等信息
+    cached = _models_cache.get(slug)
+    base = cached[0] if cached else _get_instance_info(slug)
+    base = {**base, "models": [{"id": m, "source": "probe"} for m in model_ids],
+            "probed_at": int(now)}
+    _models_cache[slug] = (base, now)
+
+    audit("probe_models", request, True, slug=slug, model_count=len(model_ids))
+    return JSONResponse({
+        "slug": slug,
+        "models": model_ids,
+        "probed_at": int(now),
+    })
+
+
+# ---------- 调用汇总 & 导出 ----------
+
+def _build_aggregate() -> list[dict]:
+    """同步聚合所有实例的 info（含 AUTHORIZATION 原文，供导出使用）。"""
+    rows = []
+    for r in read_accounts():
+        slug = r["slug"]
+        # 强制取实时 info（含原文 auth），不走 _models_cache（cache 已剥离 auth）
+        info = _get_instance_info(slug)
+        # 附带容器状态供前端着色
+        cont = inspect(f"c2a-{slug}") or {}
+        state = cont.get("State", {})
+        info["container_state"] = state.get("Status") if state else "absent"
+        info["container_health"] = (state.get("Health", {}) or {}).get("Status") or "n/a"
+        rows.append(info)
+    return rows
+
+
+def _strip_auth(rows: list[dict]) -> list[dict]:
+    return [{k: v for k, v in r.items() if k != "authorization"} for r in rows]
+
+
+@app.get(
+    "/api/instances/aggregate",
+    dependencies=[Depends(require_session)],
+)
+async def api_aggregate() -> JSONResponse:
+    """全实例聚合（不下发 AUTHORIZATION 原文）。"""
+    rows = _build_aggregate()
+    return JSONResponse({"instances": _strip_auth(rows), "server_time": int(time.time())})
+
+
+def _gen_litellm_yaml(rows: list[dict], gateway_origin: str) -> str:
+    """生成 LiteLLM proxy 兼容的 config.yaml。
+
+    每个 (slug × model) 组合一条 model_list 条目；model_name 用 `{slug}-{model}` 命名以便区分。
+    """
+    lines = [
+        "# 由 chat2api Orchestrator 自动生成",
+        f"# 生成时间: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        "model_list:",
+    ]
+    for r in rows:
+        slug = r["slug"]
+        prefix = r.get("api_prefix", "")
+        base = f"{gateway_origin}/{prefix}/v1" if prefix else r.get("base_url", "")
+        auth = r.get("authorization", "")
+        for m in r.get("models", []):
+            mid = m.get("id") if isinstance(m, dict) else str(m)
+            if not mid:
+                continue
+            lines.extend([
+                f"  - model_name: {slug}-{mid}",
+                f"    litellm_params:",
+                f"      model: openai/{mid}",
+                f"      api_base: {base}",
+                f"      api_key: {auth}",
+            ])
+    return "\n".join(lines) + "\n"
+
+
+def _gen_oneapi_json(rows: list[dict], gateway_origin: str) -> str:
+    """生成 OneAPI / new-api 兼容的渠道导入 JSON 数组。"""
+    channels = []
+    for r in rows:
+        prefix = r.get("api_prefix", "")
+        base = f"{gateway_origin}/{prefix}" if prefix else gateway_origin
+        models = [m.get("id") for m in r.get("models", []) if isinstance(m, dict) and m.get("id")]
+        channels.append({
+            "name": f"chat2api-{r['slug']}",
+            "type": 1,  # OpenAI
+            "base_url": base,
+            "key": r.get("authorization", ""),
+            "models": ",".join(models),
+            "group": r.get("plan_type", "default"),
+            "status": 1,
+        })
+    return json.dumps(channels, indent=2, ensure_ascii=False) + "\n"
+
+
+def _gen_librechat_yaml(rows: list[dict], gateway_origin: str) -> str:
+    """生成 LibreChat endpoints.custom 片段。"""
+    lines = [
+        "# 由 chat2api Orchestrator 自动生成 — 复制 endpoints.custom 部分到你的 librechat.yaml",
+        f"# 生成时间: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        "endpoints:",
+        "  custom:",
+    ]
+    for r in rows:
+        prefix = r.get("api_prefix", "")
+        base = f"{gateway_origin}/{prefix}/v1" if prefix else r.get("base_url", "")
+        auth = r.get("authorization", "")
+        models = [m.get("id") for m in r.get("models", []) if isinstance(m, dict) and m.get("id")]
+        models_csv = ", ".join(f'"{m}"' for m in models) or '"gpt-4o-mini"'
+        lines.extend([
+            f"    - name: \"chat2api-{r['slug']}\"",
+            f"      apiKey: \"{auth}\"",
+            f"      baseURL: \"{base}\"",
+            f"      models:",
+            f"        default: [{models_csv}]",
+            f"        fetch: false",
+            f"      titleConvo: true",
+            f"      titleModel: \"current_model\"",
+            f"      modelDisplayLabel: \"chat2api-{r['slug']} ({r.get('plan_label', '?')})\"",
+        ])
+    return "\n".join(lines) + "\n"
+
+
+_EXPORT_FORMATS = {
+    "litellm":   ("litellm-config.yaml",   "application/x-yaml",  _gen_litellm_yaml),
+    "oneapi":    ("oneapi-channels.json",  "application/json",     _gen_oneapi_json),
+    "librechat": ("librechat-endpoints.yaml","application/x-yaml", _gen_librechat_yaml),
+}
+
+
+@app.get(
+    "/api/export/{fmt}",
+    dependencies=[Depends(require_session)],
+)
+async def api_export(fmt: str, request: Request) -> Response:
+    """导出多上游配置到三种主流网关 / 客户端格式。包含 AUTHORIZATION 原文。
+
+    安全：仅 session 鉴权（无 CSRF, 因为 GET 触发下载），写审计。
+    """
+    if fmt not in _EXPORT_FORMATS:
+        raise HTTPException(status_code=400, detail=f"不支持的格式: {fmt}")
+    filename, mime, generator = _EXPORT_FORMATS[fmt]
+    # 拼对外可访问的 origin（导出文件里需要全 URL）
+    gateway_port = os.environ.get("ORCH_GATEWAY_PUBLIC_PORT", "60403")
+    gateway_host = os.environ.get("ORCH_GATEWAY_PUBLIC_HOST") or request.url.hostname or "localhost"
+    gateway_origin = f"http://{gateway_host}:{gateway_port}"
+    rows = _build_aggregate()
+    body = generator(rows, gateway_origin)
+    audit("export_config", request, True, fmt=fmt, instance_count=len(rows))
+    return Response(
+        content=body,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------- Playground ----------
+
+PG_PER_SLUG_LIMIT = 6      # 每分钟
+PG_GLOBAL_LIMIT = 30       # 每分钟
+PG_WINDOW = 60.0           # 1 分钟滑动
+PG_MAX_TOKENS_HARD = 4096
+PG_TIMEOUT_CONNECT = 5.0
+PG_TIMEOUT_READ = 30.0
+_pg_attempts: dict[str, list[float]] = {}
+_pg_global_attempts: list[float] = []
+
+
+def _pg_rate_limit_check(slug: str) -> tuple[bool, str]:
+    """滑动窗口限流。返回 (ok, reason)。"""
+    now = time.time()
+    cutoff = now - PG_WINDOW
+    # 全局
+    _pg_global_attempts[:] = [t for t in _pg_global_attempts if t > cutoff]
+    if len(_pg_global_attempts) >= PG_GLOBAL_LIMIT:
+        return False, f"全局限流（{PG_GLOBAL_LIMIT}/min 已满）"
+    # 单 slug
+    lst = _pg_attempts.setdefault(slug, [])
+    lst[:] = [t for t in lst if t > cutoff]
+    if len(lst) >= PG_PER_SLUG_LIMIT:
+        return False, f"slug={slug} 限流（{PG_PER_SLUG_LIMIT}/min 已满）"
+    lst.append(now)
+    _pg_global_attempts.append(now)
+    return True, ""
+
+
+@app.get(
+    "/api/playground/options",
+    dependencies=[Depends(require_session)],
+)
+async def api_playground_options() -> JSONResponse:
+    """返回所有实例 + 它们当前可用模型，供前端下拉框联动。"""
+    instances = []
+    for r in read_accounts():
+        slug = r["slug"]
+        cached = _models_cache.get(slug)
+        info = cached[0] if cached else _get_instance_info(slug)
+        instances.append({
+            "slug": slug,
+            "plan_type": info.get("plan_type", "unknown"),
+            "plan_label": info.get("plan_label", "未知"),
+            "models": [m.get("id") for m in info.get("models", []) if isinstance(m, dict) and m.get("id")],
+        })
+    return JSONResponse({"instances": instances})
+
+
+@app.post(
+    "/api/playground/invoke",
+    dependencies=[Depends(require_session), Depends(require_csrf)],
+)
+async def api_playground_invoke(request: Request) -> JSONResponse:
+    """服务端代发 chat completions（不流式 MVP）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    slug = (body.get("slug") or "").strip()
+    model = (body.get("model") or "").strip()
+    system_prompt = body.get("system") or ""
+    user_prompt = body.get("user") or ""
+    temperature = body.get("temperature")
+    max_tokens = body.get("max_tokens")
+
+    if not SLUG_RE.match(slug):
+        raise HTTPException(status_code=400, detail="slug 不合法")
+    if not any(r["slug"] == slug for r in read_accounts()):
+        raise HTTPException(status_code=404, detail=f"slug={slug} 不存在")
+    if not model:
+        raise HTTPException(status_code=400, detail="model 必填")
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="user prompt 不能为空")
+
+    # 参数夹紧
+    try:
+        temperature = float(temperature) if temperature is not None else 0.7
+    except (TypeError, ValueError):
+        temperature = 0.7
+    temperature = max(0.0, min(2.0, temperature))
+    try:
+        max_tokens = int(max_tokens) if max_tokens is not None else 512
+    except (TypeError, ValueError):
+        max_tokens = 512
+    max_tokens = max(1, min(PG_MAX_TOKENS_HARD, max_tokens))
+
+    # 限流
+    ok, reason = _pg_rate_limit_check(slug)
+    if not ok:
+        audit("playground_invoke", request, False, slug=slug, model=model, reason="rate_limited")
+        raise HTTPException(status_code=429, detail=reason)
+
+    env = read_env_file(WORK / "generated" / "env" / f"{slug}.env")
+    if not env:
+        raise HTTPException(status_code=404, detail=f"slug={slug} env 不存在")
+    api_prefix = env.get("API_PREFIX", "")
+    auth = env.get("AUTHORIZATION", "")
+
+    url = f"http://c2a-{slug}:5005/{api_prefix}/v1/chat/completions" if api_prefix else f"http://c2a-{slug}:5005/v1/chat/completions"
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_prompt})
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth}",
+    }
+
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(PG_TIMEOUT_READ, connect=PG_TIMEOUT_CONNECT),
+        ) as client:
+            r = await client.post(url, json=payload, headers=headers)
+        latency_ms = int((time.time() - t0) * 1000)
+        data: Any = None
+        try:
+            data = r.json()
+        except Exception:
+            data = None
+        if r.status_code != 200:
+            audit("playground_invoke", request, False, slug=slug, model=model,
+                  http_status=r.status_code, latency_ms=latency_ms,
+                  prompt_chars=len(user_prompt) + len(system_prompt))
+            return JSONResponse({
+                "ok": False,
+                "status": r.status_code,
+                "latency_ms": latency_ms,
+                "error": (data.get("error") if isinstance(data, dict) else None) or r.text[:300],
+            })
+        content = ""
+        usage = {}
+        if isinstance(data, dict):
+            choices = data.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                msg = choices[0].get("message") or {}
+                content = msg.get("content") or ""
+            usage = data.get("usage") or {}
+        audit("playground_invoke", request, True, slug=slug, model=model,
+              latency_ms=latency_ms,
+              prompt_chars=len(user_prompt) + len(system_prompt),
+              completion_chars=len(content),
+              prompt_tokens=usage.get("prompt_tokens"),
+              completion_tokens=usage.get("completion_tokens"))
+        return JSONResponse({
+            "ok": True,
+            "status": 200,
+            "latency_ms": latency_ms,
+            "content": content,
+            "usage": usage,
+        })
+    except httpx.TimeoutException:
+        latency_ms = int((time.time() - t0) * 1000)
+        audit("playground_invoke", request, False, slug=slug, model=model,
+              reason="timeout", latency_ms=latency_ms)
+        return JSONResponse({"ok": False, "latency_ms": latency_ms,
+                             "error": f"超时（>{int(PG_TIMEOUT_READ)}s）"}, status_code=200)
+    except Exception as e:
+        latency_ms = int((time.time() - t0) * 1000)
+        audit("playground_invoke", request, False, slug=slug, model=model,
+              reason="exception", error=str(e)[:200], latency_ms=latency_ms)
+        return JSONResponse({"ok": False, "latency_ms": latency_ms,
+                             "error": str(e)[:300]}, status_code=200)
+
