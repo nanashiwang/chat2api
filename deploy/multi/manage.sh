@@ -69,7 +69,39 @@ cleanup_renamed_containers() {
     fi
 }
 
+auto_pull() {
+    # cmd_apply 前自动 git pull --ff-only。
+    # 跳过条件：NO_PULL=1 / 非 git 仓库 / detached HEAD / 工作区有未提交改动 / pull 失败
+    # 设计原则：永不破坏现有部署——拉不到就用当前版本继续，绝不 reset / merge。
+    if [ "${NO_PULL:-0}" = "1" ]; then
+        log "NO_PULL=1，跳过 git pull"
+        return 0
+    fi
+    local repo_root
+    if ! repo_root="$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)"; then
+        log "非 git 仓库，跳过 git pull"
+        return 0
+    fi
+    local branch
+    branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+    if [ "$branch" = "HEAD" ]; then
+        log "detached HEAD，跳过 git pull（手动 checkout 分支后再 update）"
+        return 0
+    fi
+    if [ -n "$(git -C "$repo_root" status --porcelain 2>/dev/null)" ]; then
+        log "工作区有未提交改动，跳过 git pull（避免冲突；设 NO_PULL=1 可静默）"
+        return 0
+    fi
+    log "git pull --ff-only ($branch)..."
+    if git -C "$repo_root" pull --ff-only --quiet 2>/dev/null; then
+        ok "代码已同步到 $(git -C "$repo_root" log -1 --pretty='%h %s')"
+    else
+        log "git pull 跳过（非 fast-forward 或远端不可达），继续用当前版本"
+    fi
+}
+
 cmd_apply() {
+    auto_pull
     ensure_csv
     log "生成配置..."
     python3 "$DIR/generate.py"
