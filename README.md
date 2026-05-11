@@ -155,16 +155,24 @@ docker logs c2a-<slug> | grep session_sticky
 ### 一句话部署
 
 ```bash
-# 1. 先用一键脚本把 chat2api 装好（任意模式）
+# 1. 先用一键脚本把 chat2api 装好
 curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
 
-# 2. 切到 multi 目录，初始化 N 账号编排
+# 2. 初始化多实例编排面板
 cd ~/chat2api/deploy/multi
-cp accounts.example.csv accounts.csv
-vi accounts.csv          # 每行一个账号: slug,proxy_url,note
-./manage.sh init         # 生成 compose / nginx / 启动全部容器
+./manage.sh init         # 启动 orchestrator 面板；账号后续在 UI 新增
 ./manage.sh install-cli  # 让全局 chat2api 命令切到多实例模式
 ```
+
+初始化完成后运行 `./manage.sh secrets` 查看编排面板入口和密码，然后打开：
+
+```text
+http://<vps>:60403/orchestrator/
+```
+
+进入面板后点「新增账号」，填写 `slug`、代理和备注即可；不需要手动编辑 `accounts.csv`。
+
+`accounts.csv` 仍然保留给批量导入/脚本化部署使用。
 
 ### 已默认应用的工程加固（`deploy/multi/generate.py`）
 
@@ -183,11 +191,12 @@ vi accounts.csv          # 每行一个账号: slug,proxy_url,note
 
 ```bash
 chat2api migrate prep                 # 备份 + 生成 accounts.csv 模板（安全）
-vi ~/chat2api/deploy/multi/accounts.csv
 chat2api migrate apply                # 停单 + 启多（需输 yes 确认）
 # 不满意可回滚：
 chat2api migrate rollback ~/chat2api.backup-YYYYMMDD-HHMMSS
 ```
+
+迁移完成后打开 orchestrator 面板管理账号；如需批量预置账号，再编辑 `~/chat2api/deploy/multi/accounts.csv`。
 
 ---
 

@@ -22,13 +22,8 @@ export MULTI_HOST_PATH="$DIR"
 
 ensure_csv() {
     if [ ! -f "$CSV" ]; then
-        if [ -f "$EXAMPLE_CSV" ]; then
-            cp "$EXAMPLE_CSV" "$CSV"
-            log "已复制 accounts.example.csv → accounts.csv，请编辑后再次运行"
-            exit 0
-        fi
-        err "accounts.csv 不存在且无 example 可复制"
-        exit 1
+        printf 'slug,proxy_url,note\n' > "$CSV"
+        log "已创建空 accounts.csv；可在编排面板里新增账号"
     fi
 }
 
@@ -64,6 +59,37 @@ as_root() {
         err "需要 root 权限或已安装 sudo"
         exit 1
     fi
+}
+
+public_host() {
+    curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
+        || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
+        || printf '<vps>'
+}
+
+orch_password() {
+    awk -F= '$1=="ORCH_PASSWORD"{print $2}' "$GEN_DIR/orch.env" 2>/dev/null | tail -1
+}
+
+cmd_access_summary() {
+    [ -f "$GEN_DIR/orch.env" ] || return 0
+    local port host orch_pwd
+    port="${CHAT2API_GATEWAY_PORT:-60403}"
+    host="$(public_host)"
+    orch_pwd="$(orch_password)"
+    cat <<EOF
+
+============================================================
+多实例编排面板（管理所有容器）
+============================================================
+URL:            http://${host}:${port}/orchestrator/
+ORCH_PASSWORD:  ${orch_pwd:-见 $GEN_DIR/orch.env}
+
+单个实例后台 / API 凭证:
+  ./manage.sh secrets
+============================================================
+
+EOF
 }
 
 cleanup_renamed_containers() {
@@ -148,8 +174,9 @@ cmd_apply() {
     cmd_verify
     if [ "$has_orchestrator" -eq 1 ]; then
         cmd_verify_orchestrator
+        cmd_access_summary
     fi
-    ok "完成。运行 ./manage.sh secrets 查看凭证 / 编排面板访问入口"
+    ok "完成。优先使用上面的编排面板管理所有容器。"
 }
 
 cmd_init() {
@@ -225,11 +252,11 @@ cmd_secrets() {
     cat "$GEN_DIR/secrets.txt"
     if [ -f "$GEN_DIR/orch.env" ]; then
         echo
-        echo "============ Orchestrator 编排面板 ============"
+        echo "============ Orchestrator 编排面板（管理所有容器） ============"
         grep '^ORCH_PASSWORD=' "$GEN_DIR/orch.env" 2>/dev/null \
             | sed 's/^/  /'
         local port="${CHAT2API_GATEWAY_PORT:-60403}"
-        echo "  URL: http://<vps>:${port}/orchestrator/"
+        echo "  URL: http://$(public_host):${port}/orchestrator/"
         echo "==============================================="
     fi
 }
@@ -374,8 +401,8 @@ cmd_help() {
 chat2api 多实例运维（一容器一账号）
 
 用法:
-  ./manage.sh init                          首次部署（自动从 example 复制 csv）
-  ./manage.sh apply                         编辑 accounts.csv 后重新应用
+  ./manage.sh init                          首次部署（启动编排面板；账号可在 UI 新增）
+  ./manage.sh apply                         重新生成配置并应用
   ./manage.sh add <slug> [proxy] [note]     追加单个账号 + apply
   ./manage.sh remove <slug>                 移除单个账号 + apply（保留 data/）
   ./manage.sh list                          所有容器状态（docker compose ps）
