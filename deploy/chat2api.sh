@@ -115,13 +115,119 @@ update_repo_for_multi() {
   fi
 }
 
-run_compose() {
-  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    sudo docker compose "$@"
+as_root() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
   else
+    echo "需要 root 权限或安装 sudo"
+    return 1
+  fi
+}
+
+run_compose() {
+  if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
     echo "docker compose is not available"
     exit 1
   fi
+
+  if [[ "$(id -u)" -eq 0 ]] || docker info >/dev/null 2>&1; then
+    docker compose "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo docker compose "$@"
+  else
+    echo "docker requires root permission or sudo"
+    exit 1
+  fi
+}
+
+confirm_uninstall() {
+  local keep_data="$1"
+  if [[ "${CHAT2API_UNINSTALL_CONFIRM:-}" == "yes" ]]; then
+    return 0
+  fi
+  if [[ "${2:-}" == "--yes" || "${2:-}" == "-y" ]]; then
+    return 0
+  fi
+
+  echo "============================================================"
+  echo "  chat2api uninstall"
+  echo "============================================================"
+  echo "安装目录: $INSTALL_DIR"
+  if [[ "$keep_data" == "1" ]]; then
+    echo "操作: 停止服务，保留安装目录和数据"
+  else
+    echo "操作: 停止服务，并删除安装目录、/usr/local/bin/chat2api、/etc/chat2api.env"
+  fi
+  echo
+  read -r -p 'Type "yes" to proceed: ' ans </dev/tty
+  [[ "$ans" == "yes" ]]
+}
+
+resolve_uninstall_dir() {
+  local resolved
+  if [[ -z "${INSTALL_DIR:-}" || ! -d "$INSTALL_DIR" ]]; then
+    echo "[!] Invalid INSTALL_DIR: ${INSTALL_DIR:-<empty>}" >&2
+    return 1
+  fi
+  resolved="$(cd "$INSTALL_DIR" && pwd -P)" || return 1
+  case "$resolved" in
+    /|/root|/home|/Users|/opt|/srv|/tmp)
+      echo "[!] Refusing to remove unsafe install directory: $resolved" >&2
+      return 1
+      ;;
+  esac
+  if [[ ! -f "$resolved/docker-compose.yml" && ! -f "$resolved/compose.yml" && ! -f "$resolved/compose.yaml" && ! -x "$resolved/deploy/multi/manage.sh" ]]; then
+    echo "[!] Refusing to remove non-chat2api directory: $resolved" >&2
+    return 1
+  fi
+  printf "%s\n" "$resolved"
+}
+
+cmd_uninstall() {
+  local keep_data=0 assume_yes=0 arg install_dir_resolved
+  for arg in "$@"; do
+    case "$arg" in
+      --keep-data) keep_data=1 ;;
+      --yes|-y) assume_yes=1 ;;
+      *)
+        echo "Usage: chat2api uninstall [--keep-data] [--yes]"
+        return 1
+      ;;
+    esac
+  done
+
+  install_dir_resolved="$(resolve_uninstall_dir)" || return 1
+
+  if ! confirm_uninstall "$keep_data" "$([[ "$assume_yes" == "1" ]] && printf -- --yes)"; then
+    echo "Aborted."
+    return 0
+  fi
+
+  echo "[*] Stopping chat2api services..."
+  if is_multi_install; then
+    if ! run_multi_manage down; then
+      echo "[!] Failed to stop multi-instance services; uninstall aborted."
+      return 1
+    fi
+  else
+    if ! run_compose down --remove-orphans; then
+      echo "[!] Failed to stop services; uninstall aborted."
+      return 1
+    fi
+  fi
+
+  if [[ "$keep_data" == "1" ]]; then
+    echo "[✓] Services stopped. Data kept at: $INSTALL_DIR"
+    return 0
+  fi
+
+  echo "[*] Removing install directory and command..."
+  cd /
+  rm -rf -- "$install_dir_resolved" || as_root rm -rf -- "$install_dir_resolved"
+  as_root rm -f /usr/local/bin/chat2api "$CONFIG_FILE"
+  echo "[✓] chat2api uninstalled."
 }
 
 # ============================================================
@@ -477,6 +583,7 @@ Multi-instance commands:
   start         Same as update
   restart       Same as update
   stop          Stop all multi-instance services
+  uninstall     Stop and remove chat2api; use --keep-data to keep files
   status        Show multi-instance status and sampled egress IPs
   verify        Verify admin/tokens routing for all instances
   logs <slug>   Tail one instance logs
@@ -505,6 +612,7 @@ Single-instance commands:
                       Restore single-instance from a previous backup
   restart             Restart services
   stop                Stop services
+  uninstall           Stop and remove chat2api; use --keep-data to keep files
   start               Start services
   status              Show compose status
   logs                Tail chat2api logs
@@ -551,6 +659,9 @@ case "$command_name" in
     else
       run_compose stop
     fi
+    ;;
+  uninstall)
+    cmd_uninstall "${@:2}"
     ;;
   start)
     if is_multi_install; then
