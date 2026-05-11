@@ -91,6 +91,24 @@ function escapeHtml(s) {
     }[c]));
 }
 
+/**
+ * 紧凑型行内模型 chip 渲染：最多展示 maxVisible 个，超出显示 "+N"。
+ * 入参：models 可以是 ["gpt-5", ...] 或 [{id, source}, ...]
+ */
+function renderInlineModels(models, maxVisible = 4) {
+    if (!models || !models.length) {
+        return '<div class="mt-1 text-xs text-gray-400">无可用模型</div>';
+    }
+    const ids = models.map(m => (typeof m === 'string') ? m : (m && m.id));
+    const visible = ids.slice(0, maxVisible);
+    const more = ids.length - visible.length;
+    const chips = visible.map(id => `<span class="model-chip">${escapeHtml(id)}</span>`).join('');
+    const moreBadge = more > 0
+        ? `<span class="model-chip" style="background:#f3f4f6;color:#6b7280;border-color:#e5e7eb">+${more}</span>`
+        : '';
+    return `<div class="flex flex-wrap gap-1 mt-1 max-w-md">${chips}${moreBadge}</div>`;
+}
+
 function renderRows(instances) {
     if (!instances.length) {
         $('#tbody').innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400">暂无账号，点击右上角「新增账号」开始</td></tr>';
@@ -107,6 +125,7 @@ function renderRows(instances) {
             <td class="px-4 py-2 text-xs text-gray-600">${escapeHtml(it.note || '-')}</td>
             <td class="px-4 py-2">
                 <button class="row-action-btn text-indigo-600 font-medium" data-action="invoke" data-slug="${escapeHtml(it.slug)}">📡 调用</button>
+                ${renderInlineModels(it.models, 4)}
             </td>
             <td class="px-4 py-2 text-right whitespace-nowrap">
                 <button class="row-action-btn text-blue-600" data-action="secret" data-slug="${escapeHtml(it.slug)}">凭证</button>
@@ -518,13 +537,17 @@ async function openSummaryModal() {
                     ? '<span class="text-green-600">● healthy</span>'
                     : '<span class="text-yellow-600">● ' + escapeHtml(r.container_health || '?') + '</span>')
                 : '<span class="text-gray-400">○ ' + escapeHtml(r.container_state || 'absent') + '</span>';
+            const modelIds = (r.models || []).map(m => (typeof m === 'string') ? m : (m && m.id)).filter(Boolean);
+            const modelsHtml = modelIds.length
+                ? `<div class="flex flex-wrap gap-1">${modelIds.map(id => `<span class="model-chip">${escapeHtml(id)}</span>`).join('')}</div>`
+                : '<span class="text-xs text-gray-400">无</span>';
             return `
-                <tr class="border-t border-gray-100 hover:bg-gray-50">
+                <tr class="border-t border-gray-100 hover:bg-gray-50 align-top">
                     <td class="px-3 py-2 font-medium kbd-row">${escapeHtml(r.slug)}</td>
                     <td class="px-3 py-2"><span class="inline-block px-2 py-0.5 rounded text-xs ${planClass}">${escapeHtml(r.plan_label || r.plan_type)}</span></td>
                     <td class="px-3 py-2 text-xs text-gray-600 kbd-row break-all">${escapeHtml(endpoint)}</td>
                     <td class="px-3 py-2 text-xs text-gray-600 kbd-row">${escapeHtml(r.auth_masked || '-')}</td>
-                    <td class="px-3 py-2 text-xs">${(r.models || []).length}</td>
+                    <td class="px-3 py-2 text-xs">${modelsHtml}</td>
                     <td class="px-3 py-2 text-xs">${health}</td>
                 </tr>
             `;

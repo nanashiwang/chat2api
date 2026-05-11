@@ -590,6 +590,17 @@ async def api_instance_op(slug: str, op: str, request: Request) -> JSONResponse:
 
 # ---------- API: 状态 ----------
 
+def _cached_instance_info(slug: str) -> dict:
+    """带 5min 内存缓存的 info 取数。api_status 每 5s 轮询用，避免每次重算 JWT+IO。"""
+    now = time.time()
+    cached = _models_cache.get(slug)
+    if cached and now - cached[1] < INFO_CACHE_TTL:
+        return cached[0]
+    info = _get_instance_info(slug)
+    _models_cache[slug] = (info, now)
+    return info
+
+
 @app.get("/api/status", dependencies=[Depends(require_session)])
 async def api_status() -> JSONResponse:
     rows = read_accounts()
@@ -612,6 +623,12 @@ async def api_status() -> JSONResponse:
                 )
             except (ValueError, TypeError):
                 uptime_seconds = None
+        # 调用层信息（带 5min cache，不影响轮询性能）
+        try:
+            call_info = _cached_instance_info(slug)
+        except Exception as e:
+            logger.warning("status: get info for %s failed: %s", slug, e)
+            call_info = {}
         instances.append({
             "slug": slug,
             "container": f"c2a-{slug}",
@@ -624,6 +641,11 @@ async def api_status() -> JSONResponse:
             "exit_ip": _exit_ip_cache.get(slug, (None, 0))[0],
             "cookie_last_success_at": get_cookie_last_success(slug),
             "note": r["note"],
+            # 新增：调用层（不含 AUTHORIZATION 原文）
+            "plan_type": call_info.get("plan_type", "unknown"),
+            "plan_label": call_info.get("plan_label", "未知"),
+            "plan_color": call_info.get("plan_color", "rose"),
+            "models": [m.get("id") for m in (call_info.get("models") or []) if isinstance(m, dict) and m.get("id")],
         })
     return JSONResponse({
         "instances": instances,
@@ -784,11 +806,7 @@ async def api_instance_info(slug: str) -> JSONResponse:
 
     now = time.time()
     cached = _models_cache.get(slug)
-    if cached and now - cached[1] < INFO_CACHE_TTL:
-        info = cached[0]
-    else:
-        info = _get_instance_info(slug)
-        _models_cache[slug] = (info, now)
+    info = _cached_instance_info(slug)
 
     # 出口前再次剥离 AUTHORIZATION 原文，浏览器只见 masked
     safe = {k: v for k, v in info.items() if k != "authorization"}
