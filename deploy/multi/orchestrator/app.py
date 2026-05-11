@@ -786,6 +786,20 @@ async def api_logs(
 # ====================================================================
 
 MODELS_BY_PLAN_FILE = Path(__file__).parent / "static" / "models_by_plan.json"
+DEEP_RESEARCH_MODEL_ALIASES = (
+    "o3-deep-research",
+    "o4-mini-deep-research",
+    "gpt-4o-deep-research",
+    "deep-research",
+)
+DEEP_RESEARCH_CAPABLE_PREFIXES = (
+    "gpt-4",
+    "gpt-4o",
+    "gpt-5",
+    "o1",
+    "o3",
+    "o4",
+)
 _models_cache: dict[str, tuple[dict, float]] = {}  # slug -> (info_dict, ts)
 INFO_CACHE_TTL = 300.0  # 5 分钟
 PROBE_MIN_INTERVAL = 30.0  # 单 slug 探测最小间隔
@@ -800,6 +814,25 @@ def _load_static_models() -> dict:
     except (FileNotFoundError, json.JSONDecodeError) as e:
         logger.error("加载 models_by_plan.json 失败：%s", e)
         return {"plans": {"unknown": {"label": "未知", "color": "rose", "models": []}}}
+
+
+def _is_deep_research_capable(model_id: str) -> bool:
+    if not model_id or model_id in DEEP_RESEARCH_MODEL_ALIASES:
+        return False
+    return model_id.startswith(DEEP_RESEARCH_CAPABLE_PREFIXES)
+
+
+def _probe_model_entries(model_ids: list[str]) -> list[dict[str, str]]:
+    ids = {str(model_id) for model_id in (model_ids or []) if model_id}
+    if any(_is_deep_research_capable(model_id) for model_id in ids):
+        ids.update(DEEP_RESEARCH_MODEL_ALIASES)
+    return [
+        {
+            "id": model_id,
+            "source": "alias" if model_id in DEEP_RESEARCH_MODEL_ALIASES else "probe",
+        }
+        for model_id in sorted(ids)
+    ]
 
 
 def _parse_jwt_plan(access_token: str) -> str:
@@ -901,10 +934,11 @@ async def api_instance_info(slug: str) -> JSONResponse:
     return JSONResponse(safe)
 
 
-async def _probe_models(slug: str, api_prefix: str, auth: str) -> list[str]:
-    """容器内网 GET c2a-{slug}:5005/{api_prefix}/v1/models，返回 model id 列表。
+async def _probe_models(slug: str, api_prefix: str, auth: str) -> list[dict[str, str]]:
+    """容器内网 GET c2a-{slug}:5005/{api_prefix}/v1/models，返回模型展示条目。
 
     chat2api 的 /v1/models 是 OpenAI 兼容协议，返回 {"object":"list","data":[{"id":"...",...}]}。
+    深度研究是 chat2api 支持的调用别名，上游模型列表不一定直接返回，所以这里补充展示。
     认证用 AUTHORIZATION 作 Bearer token。
     """
     url = f"http://c2a-{slug}:5005/{api_prefix}/v1/models" if api_prefix else f"http://c2a-{slug}:5005/v1/models"
@@ -916,7 +950,8 @@ async def _probe_models(slug: str, api_prefix: str, auth: str) -> list[str]:
         items = data.get("data") if isinstance(data, dict) else None
         if not isinstance(items, list):
             return []
-        return [str(it.get("id")) for it in items if isinstance(it, dict) and it.get("id")]
+        model_ids = [str(it.get("id")) for it in items if isinstance(it, dict) and it.get("id")]
+        return _probe_model_entries(model_ids)
 
 
 @app.post(
@@ -944,7 +979,7 @@ async def api_probe_models(slug: str, request: Request) -> JSONResponse:
         raise HTTPException(status_code=404, detail=f"slug={slug} env 不存在")
 
     try:
-        model_ids = await _probe_models(slug, env.get("API_PREFIX", ""), env.get("AUTHORIZATION", ""))
+        model_entries = await _probe_models(slug, env.get("API_PREFIX", ""), env.get("AUTHORIZATION", ""))
     except httpx.HTTPStatusError as e:
         _, logs = read_container_logs(f"c2a-{slug}", tail=80)
         audit("probe_models", request, False, slug=slug, http_status=e.response.status_code)
@@ -966,14 +1001,15 @@ async def api_probe_models(slug: str, request: Request) -> JSONResponse:
     # 把 probe 结果合入 cache（增量），保留 plan_type 等信息
     cached = _models_cache.get(slug)
     base = cached[0] if cached else _get_instance_info(slug)
-    base = {**base, "models": [{"id": m, "source": "probe"} for m in model_ids],
-            "probed_at": int(now)}
+    model_ids = [m["id"] for m in model_entries]
+    base = {**base, "models": model_entries, "probed_at": int(now)}
     _models_cache[slug] = (base, now)
 
     audit("probe_models", request, True, slug=slug, model_count=len(model_ids))
     return JSONResponse({
         "slug": slug,
         "models": model_ids,
+        "model_entries": model_entries,
         "probed_at": int(now),
     })
 

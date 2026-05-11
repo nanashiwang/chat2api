@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from starlette.concurrency import run_in_threadpool
 
 from api.files import get_image_size, get_file_extension, determine_file_use_case
-from api.models import extract_model_slugs, get_response_model, resolve_request_model
+from api.models import augment_model_slugs, extract_model_slugs, get_response_model, resolve_request_model
 from chatgpt.authorization import get_req_token, verify_token
 from chatgpt.chatFormat import api_messages_to_chat, stream_response, format_not_stream_response, head_process_response
 from chatgpt.chatLimit import check_is_limit, handle_request_limit
@@ -116,12 +116,12 @@ class ChatService:
             raise HTTPException(status_code=r.status_code, detail=detail)
 
         models_payload = r.json()
-        model_slugs = extract_model_slugs(models_payload)
+        model_slugs = augment_model_slugs(extract_model_slugs(models_payload))
         self.available_model_cache[cache_key] = {
             "time": now,
             "slugs": model_slugs,
         }
-        logger.info(f"Available upstream models: {len(model_slugs)}")
+        logger.info(f"Available models exposed: {len(model_slugs)}")
         return model_slugs
 
     async def validate_model_access(self):

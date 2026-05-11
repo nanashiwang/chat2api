@@ -58,6 +58,35 @@ MODEL_REQUEST_RULES = (
     ("auto", "auto"),
 )
 
+DEEP_RESEARCH_MODEL_ALIASES = (
+    "o3-deep-research",
+    "o4-mini-deep-research",
+    "gpt-4o-deep-research",
+    "deep-research",
+)
+
+
+def should_expose_deep_research_aliases(model_slugs):
+    paid_markers = (
+        "gpt-4",
+        "gpt-4o",
+        "gpt-5",
+        "o1",
+        "o3",
+        "o4",
+    )
+    return any(
+        isinstance(slug, str) and slug.startswith(paid_markers)
+        for slug in (model_slugs or [])
+    )
+
+
+def augment_model_slugs(model_slugs):
+    slugs = set(model_slugs or [])
+    if should_expose_deep_research_aliases(slugs):
+        slugs.update(DEEP_RESEARCH_MODEL_ALIASES)
+    return slugs
+
 
 def get_response_model(origin_model):
     return model_proxy.get(origin_model, origin_model)

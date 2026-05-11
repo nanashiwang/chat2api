@@ -443,10 +443,14 @@ function renderModelChips(models, sourceHint) {
         wrap.innerHTML = '<span class="text-xs text-gray-400">无可用模型</span>';
     } else {
         wrap.innerHTML = models.map(m => {
-            const sourceTag = m.source === 'probe'
+            const modelId = (typeof m === 'string') ? m : (m && m.id);
+            const source = (typeof m === 'string') ? '' : (m && m.source);
+            const sourceTag = source === 'probe'
                 ? '<span class="ml-1 text-[10px] text-emerald-600">实测</span>'
-                : '';
-            return `<span class="model-chip">${escapeHtml(m.id)}${sourceTag}</span>`;
+                : (source === 'alias'
+                    ? '<span class="ml-1 text-[10px] text-amber-600">别名</span>'
+                    : '');
+            return `<span class="model-chip">${escapeHtml(modelId)}${sourceTag}</span>`;
         }).join('');
     }
     $('#invoke-models-source-hint').textContent = sourceHint || '';
@@ -522,10 +526,14 @@ $('#btn-probe-models').addEventListener('click', async () => {
     btn.textContent = '探测中...';
     try {
         const d = await api('POST', '/api/probe-models/' + encodeURIComponent(slug), {});
-        const models = (d.models || []).map(id => ({ id, source: 'probe' }));
+        const models = d.model_entries || (d.models || []).map(id => ({ id, source: 'probe' }));
         if (invokeCurrent) {
             invokeCurrent.models = models;
-            renderModelChips(models, '(实测 @ ' + new Date(d.probed_at * 1000).toLocaleTimeString() + ')');
+            const hasAlias = models.some(m => m.source === 'alias');
+            renderModelChips(
+                models,
+                (hasAlias ? '(实测 + 深度研究别名 @ ' : '(实测 @ ') + new Date(d.probed_at * 1000).toLocaleTimeString() + ')'
+            );
             renderInvokeSnippet();   // 用新的第一个 model 刷新代码示例
         }
         $('#invoke-error').classList.add('hidden');
