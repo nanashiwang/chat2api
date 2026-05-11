@@ -309,6 +309,33 @@ def read_audit(limit: int = 200) -> list[dict]:
     return out
 
 
+def redact_log_text(text: str) -> str:
+    """日志对前端展示前做基础脱敏，避免误复制密钥。"""
+    patterns = [
+        (r"(Bearer\s+)[A-Za-z0-9._=-]{20,}", r"\1***"),
+        (r"(AUTHORIZATION=)[^\s]+", r"\1***"),
+        (r"(sk-[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+", r"\1***"),
+        (r"(sess-)[^\s\"']{24,}", r"\1***"),
+        (r"(rt_[^\s\"']{8})[^\s\"']+", r"\1***"),
+        (r"(eyJ[A-Za-z0-9_-]{16})[A-Za-z0-9._-]+", r"\1***"),
+    ]
+    for pattern, repl in patterns:
+        text = re.sub(pattern, repl, text)
+    return text
+
+
+def log_targets() -> list[dict[str, str]]:
+    targets = [
+        {"id": "orchestrator", "label": "orchestrator 面板", "container": "c2a-orchestrator"},
+        {"id": "nginx", "label": "nginx 网关", "container": "c2a-nginx"},
+        {"id": "watchtower", "label": "watchtower 更新器", "container": "c2a-watchtower"},
+    ]
+    for row in read_accounts():
+        slug = row["slug"]
+        targets.append({"id": slug, "label": f"实例 {slug}", "container": f"c2a-{slug}"})
+    return targets
+
+
 # ---------- 鉴权 ----------
 
 def issue_session_token() -> str:
@@ -695,6 +722,57 @@ async def api_reveal_secret(slug: str, request: Request) -> JSONResponse:
 @app.get("/api/audit", dependencies=[Depends(require_session)])
 async def api_audit(limit: int = Query(200, ge=1, le=2000)) -> JSONResponse:
     return JSONResponse({"records": read_audit(limit)})
+
+
+@app.get(
+    "/api/log-targets",
+    dependencies=[Depends(require_session), Depends(require_csrf)],
+)
+async def api_log_targets() -> JSONResponse:
+    return JSONResponse({"targets": log_targets()})
+
+
+@app.get(
+    "/api/logs",
+    dependencies=[Depends(require_session), Depends(require_csrf)],
+)
+async def api_logs(
+    request: Request,
+    target: str = Query("orchestrator"),
+    tail: int = Query(200, ge=20, le=2000),
+) -> JSONResponse:
+    target_map = {item["id"]: item for item in log_targets()}
+    item = target_map.get(target)
+    if not item:
+        audit("view_logs", request, False, target=target, reason="invalid_target")
+        raise HTTPException(status_code=400, detail="日志目标不存在")
+
+    container = item["container"]
+    rc, out, err = run(
+        ["docker", "logs", "--tail", str(tail), "--timestamps", container],
+        timeout=30,
+    )
+    raw = "\n".join(part for part in (out, err) if part.strip())
+    text = redact_log_text(raw or "(无日志输出)")
+    audit("view_logs", request, rc == 0, target=target, tail=tail)
+    if rc != 0:
+        return JSONResponse(
+            {
+                "ok": False,
+                "target": target,
+                "container": container,
+                "tail": tail,
+                "logs": text,
+            },
+            status_code=200,
+        )
+    return JSONResponse({
+        "ok": True,
+        "target": target,
+        "container": container,
+        "tail": tail,
+        "logs": text,
+    })
 
 
 # ====================================================================

@@ -20,6 +20,7 @@
             <button id="btn-playground" class="text-sm px-3 py-1.5 bg-pink-100 hover:bg-pink-200 text-pink-700 rounded">🎮 试调用</button>
             <button id="btn-refresh" class="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded">刷新</button>
             <button id="btn-audit" class="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded">审计日志</button>
+            <button id="btn-diag-logs" class="text-sm px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-700 rounded">诊断日志</button>
             <form method="POST" action="./logout" class="inline">
                 <button type="submit" class="text-sm px-3 py-1.5 text-red-600 hover:bg-red-50 rounded">退出</button>
             </form>
@@ -114,6 +115,33 @@
                 </thead>
                 <tbody id="audit-body"></tbody>
             </table>
+        </div>
+    </div>
+</div>
+
+<!-- 模态：诊断日志 -->
+<div id="modal-logs" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[88vh] flex flex-col">
+        <div class="flex items-center justify-between p-4 border-b">
+            <h3 class="text-lg font-semibold">诊断日志</h3>
+            <button id="btn-close-logs" class="text-gray-400 hover:text-gray-600">×</button>
+        </div>
+        <div class="p-4 border-b bg-gray-50 flex flex-wrap items-center gap-2">
+            <label class="text-xs text-gray-500">目标</label>
+            <select id="log-target" class="px-2 py-1.5 border border-gray-300 rounded text-sm"></select>
+            <label class="text-xs text-gray-500 ml-2">行数</label>
+            <select id="log-tail" class="px-2 py-1.5 border border-gray-300 rounded text-sm">
+                <option value="100">100</option>
+                <option value="200" selected>200</option>
+                <option value="500">500</option>
+                <option value="1000">1000</option>
+            </select>
+            <button id="btn-refresh-logs" class="text-sm px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded">刷新日志</button>
+            <button class="copy-btn text-sm px-3 py-1.5 bg-gray-700 hover:bg-gray-800 text-white rounded" data-copy-target="logs-body">复制日志</button>
+            <span id="logs-meta" class="text-xs text-gray-500"></span>
+        </div>
+        <div class="overflow-auto flex-1 p-4 bg-gray-950">
+            <pre id="logs-body" class="text-xs text-gray-100 whitespace-pre-wrap break-words">(未加载)</pre>
         </div>
     </div>
 </div>

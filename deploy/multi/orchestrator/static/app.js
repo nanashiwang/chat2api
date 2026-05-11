@@ -111,7 +111,7 @@ function renderInlineModels(models, maxVisible = 4) {
 
 function renderRows(instances) {
     if (!instances.length) {
-        $('#tbody').innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400">暂无账号，点击右上角「新增账号」开始</td></tr>';
+        $('#tbody').innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-400">暂无账号，点击右上角「新增账号」开始</td></tr>';
         return;
     }
     $('#tbody').innerHTML = instances.map(it => `
@@ -315,6 +315,57 @@ $('#btn-close-audit').addEventListener('click', () => {
     $('#modal-audit').classList.add('hidden');
     $('#modal-audit').classList.remove('flex');
 });
+
+// ---------- 诊断日志 ----------
+
+let logTargetsLoaded = false;
+
+async function loadLogTargets() {
+    const d = await api('GET', '/api/log-targets');
+    const targets = d.targets || [];
+    $('#log-target').innerHTML = targets.map(t =>
+        `<option value="${escapeHtml(t.id)}">${escapeHtml(t.label)} · ${escapeHtml(t.container)}</option>`
+    ).join('');
+    logTargetsLoaded = true;
+}
+
+async function refreshLogs() {
+    const target = $('#log-target').value || 'orchestrator';
+    const tail = $('#log-tail').value || '200';
+    $('#logs-body').textContent = '加载中...';
+    $('#logs-meta').textContent = '';
+    try {
+        const d = await api('GET', `/api/logs?target=${encodeURIComponent(target)}&tail=${encodeURIComponent(tail)}`);
+        $('#logs-body').textContent = d.logs || '(无日志输出)';
+        $('#logs-meta').textContent = `${d.ok ? 'OK' : '异常'} · ${d.container || target} · 最近 ${d.tail || tail} 行`;
+        if (!d.ok) toast('日志目标返回异常，内容已显示', true);
+    } catch (e) {
+        $('#logs-body').textContent = '加载日志失败：' + e.message;
+        $('#logs-meta').textContent = '加载失败';
+        toast('加载日志失败：' + e.message, true);
+    }
+}
+
+async function openLogsModal() {
+    $('#modal-logs').classList.remove('hidden');
+    $('#modal-logs').classList.add('flex');
+    try {
+        if (!logTargetsLoaded) await loadLogTargets();
+        await refreshLogs();
+    } catch (e) {
+        $('#logs-body').textContent = '加载日志失败：' + e.message;
+        toast('加载日志失败：' + e.message, true);
+    }
+}
+
+$('#btn-diag-logs').addEventListener('click', openLogsModal);
+$('#btn-close-logs').addEventListener('click', () => {
+    $('#modal-logs').classList.add('hidden');
+    $('#modal-logs').classList.remove('flex');
+});
+$('#btn-refresh-logs').addEventListener('click', refreshLogs);
+$('#log-target').addEventListener('change', refreshLogs);
+$('#log-tail').addEventListener('change', refreshLogs);
 
 // ---------- 调用信息 (单实例) ----------
 
