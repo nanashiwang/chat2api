@@ -141,3 +141,16 @@ else:
 if token_list:
     logger.info(f"Token list count: {len(token_list)}, Error token list count: {len(error_token_list)}")
     logger.info("-" * 60)
+
+
+def persist_token_list():
+    """全量重写 data/token.txt（用于 cookie 滚动续期后同步磁盘）。"""
+    with open(TOKENS_FILE, "w", encoding="utf-8") as f:
+        for t in token_list:
+            f.write(t + "\n")
+
+
+def persist_fp_map():
+    """全量重写 data/fp_map.json。"""
+    with open(FP_FILE, "w", encoding="utf-8") as f:
+        json.dump(fp_map, f, indent=2, ensure_ascii=False)

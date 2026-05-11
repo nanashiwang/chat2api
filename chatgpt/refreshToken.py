@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import hashlib
 import json
 import random
@@ -15,8 +17,11 @@ from utils.configs import (
     openai_auth_token_url,
     proxy_url_list,
 )
-from utils.routing import get_bound_proxy
+from utils.routing import get_bound_proxy, save_routing_config
 import utils.globals as globals
+
+# 跨结构 key 迁移锁，防止多个并发刷新同时改 token_list/refresh_map/routing_config
+_session_key_lock = asyncio.Lock()
 
 
 def persist_refresh_map():
@@ -28,6 +33,137 @@ def persist_error_tokens():
     with open(globals.ERROR_TOKENS_FILE, "w", encoding="utf-8") as f:
         for token in globals.error_token_list:
             f.write(token + "\n")
+
+
+def _decode_jwt_exp(jwt_token):
+    """解析 JWT payload 的 'exp' 字段（秒级时间戳）；任何失败返回 0。"""
+    if not jwt_token or "." not in jwt_token:
+        return 0
+    try:
+        payload_b64 = jwt_token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("ascii")))
+        return int(payload.get("exp") or 0)
+    except Exception:
+        return 0
+
+
+def _extract_rotated_cookie(response, original_cookie):
+    """从响应里取 NextAuth 滚动续期回写的新 session-token。
+
+    支持：
+      - 单片：`__Secure-next-auth.session-token=<value>`
+      - 多片：`__Secure-next-auth.session-token.0=...; .1=...; .2=...`
+        多片按下标排序后用 SESS_CHUNK_SEPARATOR（'|||'）拼接，与存储格式一致
+
+    返回：
+      - 新 cookie 值（已剥除 cookie 名）；与 original_cookie 相同则返回 None
+      - 解析失败或服务端未续期返回 None
+    """
+    base_name = NEXTAUTH_COOKIE_NAME  # __Secure-next-auth.session-token
+    chunks = {}  # idx -> value；-1 代表单片
+    try:
+        # curl_cffi 响应的 cookies 实际是 RequestsCookieJar（dict-like + .items()）
+        jar = getattr(response, "cookies", None)
+        if jar is not None:
+            try:
+                items = list(jar.items())
+            except Exception:
+                items = [(c.name, c.value) for c in jar]
+            for name, value in items:
+                if not name or not value:
+                    continue
+                if name == base_name:
+                    chunks[-1] = value
+                elif name.startswith(base_name + "."):
+                    suffix = name[len(base_name) + 1:]
+                    if suffix.isdigit():
+                        chunks[int(suffix)] = value
+    except Exception as e:
+        logger.warning(f"[rotated_cookie] parse cookies failed: {e!r}")
+        return None
+
+    if not chunks:
+        return None
+
+    if -1 in chunks and len(chunks) == 1:
+        new_value = chunks[-1]
+    else:
+        ordered = [chunks[i] for i in sorted(k for k in chunks if k >= 0)]
+        if not ordered:
+            return None
+        new_value = SESS_CHUNK_SEPARATOR.join(ordered)
+
+    if not new_value or new_value == original_cookie:
+        return None
+    return new_value
+
+
+async def _migrate_session_key(old_key, new_key, new_access_token, jwt_exp, proxy_url=""):
+    """cookie 滚动后，把所有以 old_key 为索引的数据迁移到 new_key 并持久化。
+
+    覆盖：refresh_map / token_list(+ token.txt) / fp_map(+ fp_map.json)
+         / routing_config.bindings & account_meta(+ routing_config.json)
+         / error_token_list(+ error_token.txt)
+    """
+    if old_key == new_key:
+        return
+    async with _session_key_lock:
+        now = int(time.time())
+
+        # 1) refresh_map：复制旧条目并合并新字段，再删旧 key
+        meta = dict(globals.refresh_map.get(old_key, {}))
+        meta.update({
+            "token": new_access_token,
+            "timestamp": now,
+            "last_success_at": now,
+            "last_error": "",
+            "last_error_at": 0,
+            "fail_count": 0,
+            "jwt_exp": jwt_exp,
+            "last_proxy": proxy_url or meta.get("last_proxy", ""),
+            "rotated_from": old_key[:24] + "...",
+            "rotated_at": now,
+        })
+        globals.refresh_map[new_key] = meta
+        globals.refresh_map.pop(old_key, None)
+        persist_refresh_map()
+
+        # 2) token_list / token.txt
+        if old_key in globals.token_list:
+            idx = globals.token_list.index(old_key)
+            globals.token_list[idx] = new_key
+            globals.persist_token_list()
+
+        # 3) fp_map / fp_map.json
+        if old_key in globals.fp_map:
+            globals.fp_map[new_key] = globals.fp_map.pop(old_key)
+            globals.persist_fp_map()
+
+        # 4) routing_config bindings & account_meta
+        routing_changed = False
+        bindings = globals.routing_config.get("bindings", {}) if isinstance(globals.routing_config, dict) else {}
+        if old_key in bindings:
+            bindings[new_key] = bindings.pop(old_key)
+            routing_changed = True
+        account_meta = globals.routing_config.get("account_meta", {}) if isinstance(globals.routing_config, dict) else {}
+        if old_key in account_meta:
+            account_meta[new_key] = account_meta.pop(old_key)
+            routing_changed = True
+        if routing_changed:
+            save_routing_config(globals.routing_config)
+
+        # 5) error_token_list（理论上 rotation 发生时 old_key 不在 error 里，但兜底）
+        if old_key in globals.error_token_list:
+            globals.error_token_list[:] = [
+                (new_key if t == old_key else t) for t in globals.error_token_list
+            ]
+            persist_error_tokens()
+
+        logger.info(
+            f"[rotation] session-token rotated: {old_key[:16]}... -> {new_key[:16]}... "
+            f"(jwt_exp={jwt_exp}, +{jwt_exp - now}s)"
+        )
 
 
 async def rt2ac(refresh_token, force_refresh=False):
@@ -60,10 +196,13 @@ async def rt2ac(refresh_token, force_refresh=False):
 
 
 async def sess2ac(session_token, force_refresh=False):
-    """Session cookie → access_token。
+    """Session cookie → access_token（带 NextAuth 滚动续期）。
 
     `session_token` 是带 'sess-' 前缀的存储形态（外部传入时已剥除 or 保留都支持）。
-    缓存 8 分钟（session accessToken 寿命约 10-15 分钟）。
+    缓存条件：
+      1) timestamp 距今 < 8 分钟（绝对节流，避免高频请求打爆 NextAuth）
+      2) 解码后的 JWT exp 距今 > 5 分钟（确保 token 真的还能用，避免拿死 token）
+    任一条件不满足都强制刷新。
     """
     # 统一 key：带前缀的是存储形态，剥除后的是 cookie 真实值
     if session_token.startswith("sess-"):
@@ -73,32 +212,44 @@ async def sess2ac(session_token, force_refresh=False):
         storage_key = "sess-" + session_token
         cookie_value = session_token
 
-    # 缓存命中
+    # 缓存命中：timestamp 节流 + JWT exp 真实有效性双重校验
+    now = int(time.time())
+    cached_meta = globals.refresh_map.get(storage_key, {})
+    cached_token = cached_meta.get("token", "")
+    cached_ts = int(cached_meta.get("timestamp", 0))
+    cached_exp = int(cached_meta.get("jwt_exp", 0)) or _decode_jwt_exp(cached_token)
     if (not force_refresh
-            and storage_key in globals.refresh_map
-            and int(time.time()) - globals.refresh_map.get(storage_key, {}).get("timestamp", 0) < 8 * 60):
-        cached = globals.refresh_map[storage_key].get("token")
-        if cached:
-            return cached
+            and cached_token
+            and now - cached_ts < 8 * 60
+            and (cached_exp == 0 or cached_exp - now > 300)):
+        return cached_token
 
     try:
-        access_token = await fetch_session_access_token(cookie_value)
-        refresh_meta = globals.refresh_map.get(storage_key, {})
-        now = int(time.time())
-        refresh_meta.update({
-            "token": access_token,
-            "timestamp": now,
-            "last_success_at": now,
-            "last_error": "",
-            "last_error_at": 0,
-            "fail_count": 0,
-        })
-        globals.refresh_map[storage_key] = refresh_meta
-        if storage_key in globals.error_token_list:
-            globals.error_token_list[:] = [item for item in globals.error_token_list if item != storage_key]
-            persist_error_tokens()
-        persist_refresh_map()
-        logger.info(f"session_cookie -> access_token OK (key={storage_key[:12]}...)")
+        access_token, effective_key, jwt_exp = await fetch_session_access_token(cookie_value)
+        # 若 fetch 内部完成了 cookie rotation，effective_key != storage_key，
+        # 此时 refresh_map[effective_key] 已被 _migrate_session_key 完整填充，无需重复写
+        if effective_key == storage_key:
+            now = int(time.time())
+            refresh_meta = globals.refresh_map.get(storage_key, {})
+            refresh_meta.update({
+                "token": access_token,
+                "timestamp": now,
+                "last_success_at": now,
+                "last_error": "",
+                "last_error_at": 0,
+                "fail_count": 0,
+                "jwt_exp": jwt_exp,
+            })
+            globals.refresh_map[storage_key] = refresh_meta
+            if storage_key in globals.error_token_list:
+                globals.error_token_list[:] = [item for item in globals.error_token_list if item != storage_key]
+                persist_error_tokens()
+            persist_refresh_map()
+        logger.info(
+            f"session_cookie -> access_token OK (key={effective_key[:12]}..., "
+            f"jwt_exp_in={(jwt_exp - int(time.time())) if jwt_exp else 'n/a'}s, "
+            f"rotated={'yes' if effective_key != storage_key else 'no'})"
+        )
         return access_token
     except HTTPException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -174,7 +325,27 @@ async def fetch_session_access_token(session_cookie):
                 f"session cookie 无效或过期（response keys={list(payload.keys())}）。"
                 f"提示：NextAuth session token 可能分片，请确保同时提供 .0 和 .1（若存在）"
             )
-        return access_token
+
+        # NextAuth 滚动续期：尝试从响应 Set-Cookie 中提取新 session-token；
+        # 若拿到，立刻把所有数据结构里的旧 key 替换为新 key 并持久化，达成"永不过期"
+        jwt_exp = _decode_jwt_exp(access_token)
+        effective_storage_key = storage_key
+        try:
+            rotated = _extract_rotated_cookie(r, session_cookie)
+        except Exception as e:
+            rotated = None
+            logger.warning(f"[sess2ac] extract rotated cookie failed (non-fatal): {e!r}")
+        if rotated:
+            new_storage_key = "sess-" + rotated
+            await _migrate_session_key(
+                old_key=storage_key,
+                new_key=new_storage_key,
+                new_access_token=access_token,
+                jwt_exp=jwt_exp,
+                proxy_url=proxy_url or "",
+            )
+            effective_storage_key = new_storage_key
+        return access_token, effective_storage_key, jwt_exp
     except Exception as e:
         now = int(time.time())
         refresh_meta = globals.refresh_map.get(storage_key, {})
