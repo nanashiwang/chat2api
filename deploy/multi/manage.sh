@@ -43,6 +43,14 @@ dc() {
     docker compose -f "$COMPOSE" --project-directory "$DIR" "$@"
 }
 
+compose_up() {
+    if dc up -d --remove-orphans --pull missing "$@"; then
+        return 0
+    fi
+    log "镜像拉取失败，尝试使用本地已有镜像继续..."
+    dc up -d --remove-orphans --pull never "$@"
+}
+
 slugs() {
     awk -F, 'NR>1 && $1!="" {print $1}' "$CSV"
 }
@@ -128,9 +136,9 @@ cmd_apply() {
     log "应用 docker compose..."
     if [ "$has_orchestrator" -eq 1 ]; then
         # orchestrator 是本地 build 镜像，静态文件变更后必须替换容器才能加载新面板。
-        dc up -d --remove-orphans --force-recreate orchestrator
+        compose_up --force-recreate orchestrator
     fi
-    dc up -d --remove-orphans
+    compose_up
     # nginx.conf 变化时 compose 不会重启 nginx，主动 reload
     if docker ps --format '{{.Names}}' | grep -qx c2a-nginx; then
         docker exec c2a-nginx nginx -s reload 2>/dev/null \
