@@ -11,6 +11,16 @@ from utils import configs
 from utils.routing import get_bound_proxy
 
 
+def _stringify_ch_value(value):
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "?1" if value else "?0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
 def select_impersonate(user_agent):
     ua = (user_agent or "").lower()
     if "edg/" in ua:
@@ -74,9 +84,9 @@ def get_fp(req_token):
             "oai-device-id": str(uuid.uuid4())
         }
         if ua.device == "desktop" and ua.browser in ("chrome", "edge"):
-            fp["sec-ch-ua-platform"] = ua.ch.platform
-            fp["sec-ch-ua"] = ua.ch.brands
-            fp["sec-ch-ua-mobile"] = ua.ch.mobile
+            fp["sec-ch-ua-platform"] = _stringify_ch_value(ua.ch.platform)
+            fp["sec-ch-ua"] = _stringify_ch_value(ua.ch.brands)
+            fp["sec-ch-ua-mobile"] = _stringify_ch_value(ua.ch.mobile)
 
         if not req_token:
             return fp

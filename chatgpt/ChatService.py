@@ -41,6 +41,29 @@ from utils.configs import (
 )
 
 
+def _stringify_header_value(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _sanitize_headers(headers):
+    clean = {}
+    for key, value in (headers or {}).items():
+        if not key:
+            continue
+        value = _stringify_header_value(value)
+        if value is not None:
+            clean[str(key)] = value
+    return clean
+
+
 class ChatService:
     available_model_cache = {}
     available_model_cache_ttl = 300
@@ -189,7 +212,7 @@ class ChatService:
             'sec-fetch-mode': 'cors',
             'sec-fetch-site': 'same-origin'
         }
-        self.base_headers.update(self.fp)
+        self.base_headers.update(_sanitize_headers(self.fp))
 
         if self.access_token:
             self.base_url = self.host_url + "/backend-api"
@@ -207,7 +230,9 @@ class ChatService:
             for k, v in self.antiban_ctx.header_overrides.items():
                 if k.startswith("_") or not v:
                     continue
-                self.base_headers[k] = v
+                normalized = _stringify_header_value(v)
+                if normalized is not None:
+                    self.base_headers[k] = normalized
             logger.info(
                 f"[antiban] headers overridden by geo: "
                 f"accept-language={self.base_headers.get('accept-language')} "
