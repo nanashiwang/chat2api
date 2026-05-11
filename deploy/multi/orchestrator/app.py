@@ -573,6 +573,9 @@ ALLOWED_OPS = {"start", "stop", "restart"}
     dependencies=[Depends(require_session), Depends(require_csrf)],
 )
 async def api_instance_op(slug: str, op: str, request: Request) -> JSONResponse:
+    if op == "probe-models":
+        # 兼容旧版前端路径：/api/instances/{slug}/probe-models
+        return await api_probe_models(slug, request)
     if op not in ALLOWED_OPS:
         raise HTTPException(status_code=400, detail=f"非法操作 {op}")
     if not SLUG_RE.match(slug):
