@@ -60,6 +60,61 @@ run_multi_manage() {
   (cd "$INSTALL_DIR/deploy/multi" && ./manage.sh "$@")
 }
 
+install_latest_cli_from_repo() {
+  local src="$INSTALL_DIR/deploy/chat2api.sh"
+  [[ -f "$src" ]] || return 0
+  if [[ "$(id -u)" -eq 0 ]]; then
+    install -m 0755 "$src" /usr/local/bin/chat2api 2>/dev/null || true
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo install -m 0755 "$src" /usr/local/bin/chat2api 2>/dev/null || true
+  fi
+}
+
+update_repo_for_multi() {
+  # 让 `chat2api update` 自己先更新部署脚本，再调用 deploy/multi/manage.sh。
+  # 本地跟踪文件改动会自动放入 git stash；不 reset、不删除用户改动。
+  if [[ "${NO_PULL:-0}" == "1" ]]; then
+    echo "[*] NO_PULL=1，跳过 git pull"
+    return 0
+  fi
+
+  local repo_root branch stash_msg=""
+  if ! repo_root="$(git -C "$INSTALL_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
+    echo "[*] 非 git 仓库，跳过 git pull"
+    return 0
+  fi
+  branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+  if [[ "$branch" == "HEAD" ]]; then
+    echo "[*] detached HEAD，跳过 git pull"
+    return 0
+  fi
+
+  if [[ -n "$(git -C "$repo_root" status --porcelain 2>/dev/null)" ]]; then
+    stash_msg="chat2api auto-stash before update $(date -u +%Y%m%dT%H%M%SZ)"
+    echo "[*] 检测到本地改动，自动暂存到 git stash..."
+    if git -C "$repo_root" stash push -m "$stash_msg" -- . >/dev/null 2>&1; then
+      echo "[✓] 本地改动已暂存：$stash_msg"
+    else
+      echo "[!] 自动暂存失败，继续使用当前代码"
+      return 0
+    fi
+  fi
+
+  echo "[*] git pull --ff-only ($branch)..."
+  if git -C "$repo_root" pull --ff-only --quiet; then
+    echo "[✓] 代码已同步到 $(git -C "$repo_root" log -1 --pretty='%h %s')"
+    install_latest_cli_from_repo
+    if [[ -n "$stash_msg" ]]; then
+      echo "[i] 被暂存的本地改动可用以下命令查看：git -C \"$repo_root\" stash list"
+    fi
+  else
+    if [[ -n "$stash_msg" ]]; then
+      git -C "$repo_root" stash pop --quiet >/dev/null 2>&1 || true
+    fi
+    echo "[!] git pull 失败，已继续使用当前代码"
+  fi
+}
+
 run_compose() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     sudo docker compose "$@"
@@ -468,6 +523,7 @@ command_name="${1:-help}"
 case "$command_name" in
   update)
     if is_multi_install; then
+      update_repo_for_multi
       run_multi_manage apply
     else
       run_compose pull

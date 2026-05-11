@@ -71,8 +71,8 @@ cleanup_renamed_containers() {
 
 auto_pull() {
     # cmd_apply 前自动 git pull --ff-only。
-    # 跳过条件：NO_PULL=1 / 非 git 仓库 / detached HEAD / 工作区有未提交改动 / pull 失败
-    # 设计原则：永不破坏现有部署——拉不到就用当前版本继续，绝不 reset / merge。
+    # 有本地跟踪文件改动时自动 stash，避免旧部署脚本挡住更新。
+    # 设计原则：永不 reset；本地改动只暂存到 git stash，方便需要时找回。
     if [ "${NO_PULL:-0}" = "1" ]; then
         log "NO_PULL=1，跳过 git pull"
         return 0
@@ -88,14 +88,27 @@ auto_pull() {
         log "detached HEAD，跳过 git pull（手动 checkout 分支后再 update）"
         return 0
     fi
+    local stash_msg=""
     if [ -n "$(git -C "$repo_root" status --porcelain 2>/dev/null)" ]; then
-        log "工作区有未提交改动，跳过 git pull（避免冲突；设 NO_PULL=1 可静默）"
-        return 0
+        stash_msg="chat2api auto-stash before update $(date -u +%Y%m%dT%H%M%SZ)"
+        log "检测到本地改动，自动暂存到 git stash..."
+        if git -C "$repo_root" stash push -m "$stash_msg" -- . >/dev/null 2>&1; then
+            ok "本地改动已暂存：$stash_msg"
+        else
+            log "自动暂存失败，跳过 git pull（可手动处理后重试）"
+            return 0
+        fi
     fi
     log "git pull --ff-only ($branch)..."
     if git -C "$repo_root" pull --ff-only --quiet 2>/dev/null; then
         ok "代码已同步到 $(git -C "$repo_root" log -1 --pretty='%h %s')"
+        if [ -n "$stash_msg" ]; then
+            log "如需查看被暂存的本地改动：git -C \"$repo_root\" stash list"
+        fi
     else
+        if [ -n "$stash_msg" ]; then
+            git -C "$repo_root" stash pop --quiet >/dev/null 2>&1 || true
+        fi
         log "git pull 跳过（非 fast-forward 或远端不可达），继续用当前版本"
     fi
 }
