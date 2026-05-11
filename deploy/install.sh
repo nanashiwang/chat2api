@@ -17,6 +17,7 @@
 #   INSTALL_DIR   安装目录（默认 $HOME/chat2api）
 #   CHAT2API_PORT 监听端口（默认 60403）
 #   GITHUB_RAW    仓库 raw URL（默认官方）
+#   GITHUB_REPO   仓库 URL（默认官方，用于下载 deploy/multi）
 #   INTERACTIVE   设为 1 进入交互模式（询问密码/前缀）
 # ============================================================
 set -euo pipefail
@@ -32,9 +33,14 @@ err()  { echo -e "${C_ERR}[✗]${C_RESET} $*" >&2; }
 # ----- 配置默认值 -----
 INSTALL_DIR="${INSTALL_DIR:-$HOME/chat2api}"
 GITHUB_RAW="${GITHUB_RAW:-https://raw.githubusercontent.com/nanashiwang/chat2api/main}"
+GITHUB_REPO="${GITHUB_REPO:-https://github.com/nanashiwang/chat2api}"
 CHAT2API_PORT="${CHAT2API_PORT:-60403}"
 INTERACTIVE="${INTERACTIVE:-0}"
-SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]-}"
+SCRIPT_SOURCE_DIR=""
+if [ -n "$SCRIPT_SOURCE" ] && [ -f "$SCRIPT_SOURCE" ]; then
+    SCRIPT_SOURCE_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd || true)"
+fi
 
 # ----- sudo / root 判定 -----
 if [ "$(id -u)" -eq 0 ]; then
@@ -115,10 +121,61 @@ shell_escape() {
     printf "%s" "$1" | sed "s/'/'\\\\''/g"
 }
 
+sync_deploy_assets() {
+    if [ -x "$INSTALL_DIR/deploy/multi/manage.sh" ] && [ -f "$INSTALL_DIR/deploy/chat2api.sh" ]; then
+        return 0
+    fi
+
+    log "准备部署辅助脚本（含多实例编排）..."
+    mkdir -p "$INSTALL_DIR/deploy"
+
+    if [ -n "$SCRIPT_SOURCE_DIR" ] && [ -d "$SCRIPT_SOURCE_DIR/multi" ]; then
+        local src_deploy dest_deploy
+        src_deploy="$(cd "$SCRIPT_SOURCE_DIR" 2>/dev/null && pwd -P || true)"
+        dest_deploy="$(cd "$INSTALL_DIR/deploy" 2>/dev/null && pwd -P || true)"
+        if [ "$src_deploy" != "$dest_deploy" ]; then
+            cp -R "$SCRIPT_SOURCE_DIR"/. "$INSTALL_DIR/deploy/"
+        fi
+        chmod +x "$INSTALL_DIR/deploy/chat2api.sh" "$INSTALL_DIR/deploy/multi/manage.sh" 2>/dev/null || true
+        ok "部署辅助脚本已准备"
+        return 0
+    fi
+
+    if ! command -v tar >/dev/null 2>&1; then
+        warn "tar 不可用，跳过 deploy/multi 下载；单实例部署不受影响"
+        return 0
+    fi
+
+    local tmp_dir archive_dir
+    tmp_dir="$(mktemp -d)" || {
+        warn "临时目录创建失败，跳过 deploy/multi 下载"
+        return 0
+    }
+
+    if curl -fsSL "${GITHUB_REPO}/archive/refs/heads/main.tar.gz" | tar -xz -C "$tmp_dir"; then
+        archive_dir="$(find "$tmp_dir" -maxdepth 1 -type d -name 'chat2api-*' | head -1)"
+        if [ -n "$archive_dir" ] && [ -d "$archive_dir/deploy" ]; then
+            cp -R "$archive_dir/deploy"/. "$INSTALL_DIR/deploy/"
+            chmod +x "$INSTALL_DIR/deploy/chat2api.sh" "$INSTALL_DIR/deploy/multi/manage.sh" 2>/dev/null || true
+            ok "部署辅助脚本已准备（含 deploy/multi）"
+        else
+            warn "仓库包缺少 deploy/，跳过 deploy/multi 下载"
+        fi
+    else
+        warn "deploy/multi 下载失败；单实例部署不受影响"
+    fi
+    rm -rf "$tmp_dir"
+}
+
 install_manage_command() {
     local script_src tmp_script
 
-    script_src="${SCRIPT_SOURCE_DIR}/chat2api.sh"
+    script_src=""
+    if [ -n "$SCRIPT_SOURCE_DIR" ] && [ -f "$SCRIPT_SOURCE_DIR/chat2api.sh" ]; then
+        script_src="${SCRIPT_SOURCE_DIR}/chat2api.sh"
+    elif [ -f "$INSTALL_DIR/deploy/chat2api.sh" ]; then
+        script_src="$INSTALL_DIR/deploy/chat2api.sh"
+    fi
 
     $SUDO mkdir -p /etc || return 1
     if ! $SUDO tee /etc/chat2api.env >/dev/null <<EOF
@@ -130,7 +187,7 @@ EOF
         return 1
     fi
 
-    if [ -f "$script_src" ]; then
+    if [ -n "$script_src" ] && [ -f "$script_src" ]; then
         $SUDO install -m 0755 "$script_src" /usr/local/bin/chat2api || return 1
     else
         tmp_script="$(mktemp)" || return 1
@@ -145,6 +202,8 @@ EOF
         rm -f "$tmp_script"
     fi
 }
+
+sync_deploy_assets
 
 # ----- 下载 compose 模板 -----
 if [ -f docker-compose.yml ]; then
@@ -255,6 +314,12 @@ ${C_OK}✅ chat2api 部署完成${C_RESET}
    3. "代理与路由"（可选）→ 添加住宅代理 → 给账号绑定
    4. 测试: curl -H "Authorization: Bearer ${AUTHORIZATION}" \\
             http://localhost:${CHAT2API_PORT}/${API_PREFIX}/v1/models
+
+🧩 多实例 / 多容器:
+   - 上面的「管理后台」是单容器后台；多容器总入口请用编排面板:
+     cd ${INSTALL_DIR}/deploy/multi && ./manage.sh init
+   - 完成后访问:
+     http://${PUBLIC_IP}:${CHAT2API_PORT}/orchestrator/
 
 🛡️  安全加固（强烈建议）:
    - 配置 IP 白名单:
