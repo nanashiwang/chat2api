@@ -207,10 +207,18 @@ async def stream_response(service, response, model, max_tokens):
                                 continue
                             citation = message.get("metadata", {}).get("citations", [])
                             if len(citation) > len_last_citation:
-                                inside_metadata = citation[-1].get("metadata", {})
-                                citation_title = inside_metadata.get("title", "")
-                                citation_url = inside_metadata.get("url", "")
-                                new_text = f' **[[""]]({citation_url} "{citation_title}")** '
+                                # 深度研究场景下单次会下发多个引用，聚合输出避免遗漏
+                                new_citations = citation[len_last_citation:]
+                                citation_parts = []
+                                for c in new_citations:
+                                    inside_metadata = c.get("metadata", {}) or {}
+                                    citation_title = inside_metadata.get("title", "ref")
+                                    citation_url = inside_metadata.get("url", "")
+                                    if citation_url:
+                                        citation_parts.append(
+                                            f'**[[""]]({citation_url} "{citation_title}")**'
+                                        )
+                                new_text = " " + " ".join(citation_parts) + " " if citation_parts else ""
                                 len_last_citation = len(citation)
                             else:
                                 if role == 'assistant' and last_role != 'assistant':

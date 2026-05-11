@@ -54,6 +54,8 @@ class ChatService:
         self.ws = None
         self.dynamic_model = False
         self.antiban_ctx = None
+        # 深度研究相关：system_hints 与请求体透传 / 模型名后缀双模式触发
+        self.system_hints = []
         # Session sticky: 由 api 层 inject 后挂载，stream_response 嗅探时用于回写映射
         self.librechat_conv_id = None
 
@@ -216,6 +218,17 @@ class ChatService:
         await self.resolve_auth_context()
 
         self.data = data
+        # 深度研究：双模式触发字段提取（必须在 set_model 之前，便于模型名识别合并）
+        # 1) 显式透传 system_hints；2) 支持别名 hints；3) 支持 deep_research:bool 快捷开关
+        raw_hints = self.data.get("system_hints")
+        if raw_hints is None:
+            raw_hints = self.data.get("hints", [])
+        if not isinstance(raw_hints, list):
+            raw_hints = []
+        if self.data.get("deep_research") is True and "research" not in raw_hints:
+            raw_hints = raw_hints + ["research"]
+        self.system_hints = raw_hints
+
         await self.set_model()
 
         self.account_id = self.data.get('Chatgpt-Account-Id', self.account_id)
@@ -242,6 +255,13 @@ class ChatService:
         self.origin_model = self.data.get("model", "gpt-3.5-turbo-0125")
         self.resp_model = get_response_model(self.origin_model)
         self.req_model, self.gizmo_id, self.dynamic_model = resolve_request_model(self.origin_model)
+
+        # 深度研究：模型名后缀识别（双模式触发之二）
+        # 当模型名包含 deep-research / deepresearch 时，自动注入 system_hints=["research"]
+        lower_origin = (self.origin_model or "").lower()
+        if "deep-research" in lower_origin or "deepresearch" in lower_origin:
+            if "research" not in self.system_hints:
+                self.system_hints = list(self.system_hints) + ["research"]
 
     async def get_chat_requirements(self):
         if conversation_only:
@@ -369,7 +389,15 @@ class ChatService:
         else:
             conversation_mode = {"kind": "primary_assistant"}
 
+        # 深度研究强制 primary_assistant 模式（原生协议约束）
+        if "research" in self.system_hints and self.gizmo_id:
+            logger.warning("Deep research forces primary_assistant mode, ignoring gizmo_id")
+            conversation_mode = {"kind": "primary_assistant"}
+            self.gizmo_id = None
+
         logger.info(f"Model mapping: {self.origin_model} -> {self.req_model}")
+        if self.system_hints:
+            logger.info(f"System hints: {self.system_hints}")
         self.chat_request = {
             "action": "next",
             "client_contextual_info": {
@@ -396,7 +424,7 @@ class ChatService:
             "reset_rate_limits": False,
             "suggestions": [],
             "supported_encodings": [],
-            "system_hints": [],
+            "system_hints": self.system_hints,
             "timezone": client_timezone,
             "timezone_offset_min": client_timezone_offset_min,
             "variant_purpose": "comparison_implicit",

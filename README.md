@@ -247,6 +247,48 @@ curl --location 'http://127.0.0.1:5005/${API_PREFIX}/v1/chat/completions' \
 Authorization: Bearer <Token>,<ChatGPT-Account-ID>
 ```
 
+### 深度研究（Deep Research）
+
+API 端兼容 ChatGPT 的深度研究功能，支持**两种触发方式**（任选其一）：
+
+**方式 A：模型名后缀**（OpenAI 兼容客户端首选）
+
+```bash
+curl -N 'http://127.0.0.1:5005/${API_PREFIX}/v1/chat/completions' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer {{Token}}' \
+  -d '{
+    "model": "o4-mini-deep-research",
+    "stream": true,
+    "messages": [{"role":"user","content":"2026 年量子计算的主要突破有哪些？请给出引用"}]
+  }'
+```
+
+可用别名：`o3-deep-research` / `o4-mini-deep-research` / `gpt-4o-deep-research` / `deep-research`
+
+**方式 B：`system_hints` 透传**（高级用法）
+
+```bash
+curl -N 'http://127.0.0.1:5005/${API_PREFIX}/v1/chat/completions' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer {{Token}}' \
+  -d '{
+    "model": "gpt-4o",
+    "system_hints": ["research"],
+    "stream": true,
+    "messages": [{"role":"user","content":"对比主流 LLM 推理引擎的吞吐量与成本"}]
+  }'
+```
+
+也可使用快捷开关 `"deep_research": true`。
+
+**注意事项：**
+
+- 账号需具备深度研究权限（Plus / Pro / Team），且本月额度未耗尽
+- 单次任务耗时通常 5~15 分钟，反向代理需调高读取超时：`nginx proxy_read_timeout ≥ 1800s`、`cloudflare` 建议改用 WebSocket / 直连
+- 流式响应包含：搜索查询提示 → 引用清单 → 中间思考 → 最终研究报告
+- 不支持与 Gizmo（GPTs）同时使用，触发时会自动降级为 `primary_assistant` 模式
+
 ### Tokens 来源
 
 - **AccessToken**：登录 chatgpt.com 后访问 [`https://chatgpt.com/api/auth/session`](https://chatgpt.com/api/auth/session) 取 `accessToken`
