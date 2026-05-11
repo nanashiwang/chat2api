@@ -64,10 +64,25 @@ install_latest_cli_from_repo() {
   local src="$INSTALL_DIR/deploy/chat2api.sh"
   [[ -f "$src" ]] || return 0
   if [[ "$(id -u)" -eq 0 ]]; then
-    install -m 0755 "$src" /usr/local/bin/chat2api 2>/dev/null || true
+    install -m 0755 "$src" /usr/local/bin/chat2api 2>/dev/null && echo "[✓] 管理命令已更新: /usr/local/bin/chat2api" || true
   elif command -v sudo >/dev/null 2>&1; then
-    sudo install -m 0755 "$src" /usr/local/bin/chat2api 2>/dev/null || true
+    sudo install -m 0755 "$src" /usr/local/bin/chat2api 2>/dev/null && echo "[✓] 管理命令已更新: /usr/local/bin/chat2api" || true
   fi
+}
+
+install_latest_cli_from_remote() {
+  local tmp_script
+  tmp_script="$(mktemp)" || return 0
+  if curl -fsSL --max-time 15 "$GITHUB_RAW/deploy/chat2api.sh" -o "$tmp_script"; then
+    if [[ "$(id -u)" -eq 0 ]]; then
+      install -m 0755 "$tmp_script" /usr/local/bin/chat2api 2>/dev/null && echo "[✓] 管理命令已更新: /usr/local/bin/chat2api" || true
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo install -m 0755 "$tmp_script" /usr/local/bin/chat2api 2>/dev/null && echo "[✓] 管理命令已更新: /usr/local/bin/chat2api" || true
+    fi
+  else
+    echo "[!] 管理命令更新失败，继续执行当前操作"
+  fi
+  rm -f "$tmp_script"
 }
 
 update_repo_for_multi() {
@@ -634,6 +649,7 @@ case "$command_name" in
       update_repo_for_multi
       run_multi_manage apply
     else
+      install_latest_cli_from_remote
       run_compose pull
       run_compose up -d
       # 提示是否有新 ENV 待合并（不强制）
@@ -660,7 +676,7 @@ case "$command_name" in
       run_compose stop
     fi
     ;;
-  uninstall)
+  uninstall|unstaill)
     cmd_uninstall "${@:2}"
     ;;
   start)
