@@ -470,6 +470,8 @@ async function openInvokeModal(slug) {
     $('#invoke-plan-source').textContent = '';
     $('#invoke-cached-state').textContent = '';
     $('#invoke-models-chips').innerHTML = '';
+    $('#invoke-error').classList.add('hidden');
+    $('#invoke-error').textContent = '';
     $('#invoke-snippet').textContent = '';
     $('#modal-invoke').classList.remove('hidden');
     $('#modal-invoke').classList.add('flex');
@@ -485,6 +487,8 @@ async function openInvokeModal(slug) {
         $('#invoke-plan-source').textContent = info.plan_source === 'jwt' ? '(从 JWT 解析)' : '(无 token, 默认 unknown)';
         $('#invoke-cached-state').textContent = info.cached ? '✓ 使用 5min 缓存' : '✓ 新生成';
         renderModelChips(info.models, '(套餐默认表)');
+        $('#invoke-error').classList.add('hidden');
+        $('#invoke-error').textContent = '';
         invokeSnippetTab = 'curl';
         $$('.snippet-tab').forEach(b => {
             const active = b.dataset.snippet === 'curl';
@@ -524,6 +528,8 @@ $('#btn-probe-models').addEventListener('click', async () => {
             renderModelChips(models, '(实测 @ ' + new Date(d.probed_at * 1000).toLocaleTimeString() + ')');
             renderInvokeSnippet();   // 用新的第一个 model 刷新代码示例
         }
+        $('#invoke-error').classList.add('hidden');
+        $('#invoke-error').textContent = '';
         toast('探测成功：' + models.length + ' 个模型');
         // 30s 内置灰
         btn.textContent = '⏳ 30s 冷却中';
@@ -532,6 +538,8 @@ $('#btn-probe-models').addEventListener('click', async () => {
             btn.textContent = originalText;
         }, 30000);
     } catch (e) {
+        $('#invoke-error').textContent = e.message;
+        $('#invoke-error').classList.remove('hidden');
         toast('探测失败：' + e.message, true);
         btn.disabled = false;
         btn.textContent = originalText;

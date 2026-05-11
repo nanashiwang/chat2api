@@ -336,6 +336,17 @@ def log_targets() -> list[dict[str, str]]:
     return targets
 
 
+def read_container_logs(container: str, tail: int = 80) -> tuple[bool, str]:
+    rc, out, err = run(
+        ["docker", "logs", "--tail", str(tail), "--timestamps", container],
+        timeout=20,
+    )
+    raw = "\n".join(part for part in (out, err) if part.strip())
+    if rc != 0 and not raw:
+        raw = f"docker logs failed: rc={rc}"
+    return rc == 0, redact_log_text(raw or "(无日志输出)")
+
+
 # ---------- 鉴权 ----------
 
 def issue_session_token() -> str:
@@ -748,14 +759,9 @@ async def api_logs(
         raise HTTPException(status_code=400, detail="日志目标不存在")
 
     container = item["container"]
-    rc, out, err = run(
-        ["docker", "logs", "--tail", str(tail), "--timestamps", container],
-        timeout=30,
-    )
-    raw = "\n".join(part for part in (out, err) if part.strip())
-    text = redact_log_text(raw or "(无日志输出)")
-    audit("view_logs", request, rc == 0, target=target, tail=tail)
-    if rc != 0:
+    ok, text = read_container_logs(container, tail=tail)
+    audit("view_logs", request, ok, target=target, tail=tail)
+    if not ok:
         return JSONResponse(
             {
                 "ok": False,
@@ -940,11 +946,22 @@ async def api_probe_models(slug: str, request: Request) -> JSONResponse:
     try:
         model_ids = await _probe_models(slug, env.get("API_PREFIX", ""), env.get("AUTHORIZATION", ""))
     except httpx.HTTPStatusError as e:
+        _, logs = read_container_logs(f"c2a-{slug}", tail=80)
         audit("probe_models", request, False, slug=slug, http_status=e.response.status_code)
-        raise HTTPException(status_code=502, detail=f"实例返回 {e.response.status_code}: {e.response.text[:200]}")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"实例返回 {e.response.status_code}: {e.response.text[:300]}\n\n"
+                f"--- c2a-{slug} 最近日志 ---\n{logs[-6000:]}"
+            ),
+        )
     except Exception as e:
+        _, logs = read_container_logs(f"c2a-{slug}", tail=80)
         audit("probe_models", request, False, slug=slug, error=str(e)[:200])
-        raise HTTPException(status_code=500, detail=f"探测失败：{str(e)[:200]}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"探测失败：{str(e)[:300]}\n\n--- c2a-{slug} 最近日志 ---\n{logs[-6000:]}",
+        )
 
     # 把 probe 结果合入 cache（增量），保留 plan_type 等信息
     cached = _models_cache.get(slug)
