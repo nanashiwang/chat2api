@@ -111,18 +111,20 @@ function renderInlineModels(models, maxVisible = 4) {
 
 function renderRows(instances) {
     if (!instances.length) {
-        $('#tbody').innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-400">暂无账号，点击右上角「新增账号」开始</td></tr>';
+        $('#tbody').innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400">暂无账号，点击右上角「新增账号」开始</td></tr>';
         return;
     }
     $('#tbody').innerHTML = instances.map(it => `
         <tr class="border-t border-gray-100 hover:bg-gray-50">
-            <td class="px-4 py-2 font-medium kbd-row">${escapeHtml(it.slug)}</td>
+            <td class="px-4 py-2">
+                <div class="font-medium text-gray-900">${escapeHtml(it.note || it.slug)}</div>
+                ${it.note ? `<div class="text-xs text-gray-400 kbd-row">${escapeHtml(it.slug)}</div>` : ''}
+            </td>
             <td class="px-4 py-2 kbd-row text-xs text-gray-600">${escapeHtml(it.proxy_masked || '-')}</td>
             <td class="px-4 py-2">${healthBadge(it.state, it.health)}</td>
             <td class="px-4 py-2 kbd-row text-xs text-gray-600">${escapeHtml(it.exit_ip || '?')}</td>
             <td class="px-4 py-2 text-xs text-gray-500">${fmtUptime(it.uptime_seconds)}</td>
             <td class="px-4 py-2 text-xs">${fmtCookieAge(it.cookie_last_success_at)}</td>
-            <td class="px-4 py-2 text-xs text-gray-600">${escapeHtml(it.note || '-')}</td>
             <td class="px-4 py-2">
                 <button class="row-action-btn text-indigo-600 font-medium" data-action="invoke" data-slug="${escapeHtml(it.slug)}">📡 调用</button>
                 ${renderInlineModels(it.models, 4)}
@@ -165,6 +167,9 @@ function openModal(mode, prefill = {}) {
     $('#modal-title').textContent = mode === 'add' ? '新增账号' : `编辑 ${prefill.slug}`;
     $('#f-slug').value = prefill.slug || '';
     $('#f-slug').disabled = mode === 'edit';
+    $('#slug-help').textContent = mode === 'edit'
+        ? 'slug 是容器路径/数据目录 ID，创建后不可改；列表会优先显示备注'
+        : '小写字母 / 数字 / 连字符，最多 16 位';
     $('#f-proxy').value = mode === 'edit' ? '' : (prefill.proxy_url || '');
     $('#f-proxy').placeholder = mode === 'edit'
         ? `当前：${prefill.proxy || '(无)'}; 留空则不变`
