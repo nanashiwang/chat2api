@@ -3,6 +3,7 @@ set -euo pipefail
 
 CONFIG_FILE="/etc/chat2api.env"
 GITHUB_RAW_DEFAULT="https://raw.githubusercontent.com/nanashiwang/chat2api/main"
+GITHUB_REPO_DEFAULT="https://github.com/nanashiwang/chat2api"
 
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1091
@@ -10,6 +11,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 GITHUB_RAW="${GITHUB_RAW:-$GITHUB_RAW_DEFAULT}"
+GITHUB_REPO="${GITHUB_REPO:-$GITHUB_REPO_DEFAULT}"
 
 detect_install_dir() {
   if [[ -n "${INSTALL_DIR:-}" && -d "${INSTALL_DIR:-}" ]]; then
@@ -89,6 +91,35 @@ install_latest_cli_from_remote() {
   rm -f "$tmp_script"
 }
 
+sync_deploy_assets_from_remote() {
+  if [[ "${NO_PULL:-0}" == "1" ]]; then
+    return 0
+  fi
+  if ! command -v tar >/dev/null 2>&1; then
+    echo "[!] tar 不可用，跳过部署脚本同步"
+    return 0
+  fi
+
+  local tmp_dir archive_dir
+  tmp_dir="$(mktemp -d)" || return 0
+  echo "[*] 同步部署脚本与编排面板..."
+  if curl -fsSL --max-time 30 "${GITHUB_REPO}/archive/refs/heads/main.tar.gz" | tar -xz -C "$tmp_dir"; then
+    archive_dir="$(find "$tmp_dir" -maxdepth 1 -type d -name 'chat2api-*' | head -1)"
+    if [[ -n "$archive_dir" && -d "$archive_dir/deploy" ]]; then
+      mkdir -p "$INSTALL_DIR/deploy"
+      cp -R "$archive_dir/deploy"/. "$INSTALL_DIR/deploy/"
+      chmod +x "$INSTALL_DIR/deploy/chat2api.sh" "$INSTALL_DIR/deploy/multi/manage.sh" 2>/dev/null || true
+      install_latest_cli_from_repo
+      echo "[✓] 部署脚本与编排面板已同步"
+    else
+      echo "[!] 仓库包缺少 deploy/，跳过同步"
+    fi
+  else
+    echo "[!] 部署脚本同步失败，继续使用当前版本"
+  fi
+  rm -rf "$tmp_dir"
+}
+
 update_repo_for_multi() {
   # 让 `chat2api update` 自己先更新部署脚本，再调用 deploy/multi/manage.sh。
   # 本地跟踪文件改动会自动放入 git stash；不 reset、不删除用户改动。
@@ -99,7 +130,8 @@ update_repo_for_multi() {
 
   local repo_root branch stash_msg=""
   if ! repo_root="$(git -C "$INSTALL_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
-    echo "[*] 非 git 仓库，跳过 git pull"
+    echo "[*] 非 git 仓库，改用 GitHub 包同步"
+    sync_deploy_assets_from_remote
     return 0
   fi
   branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
@@ -671,7 +703,7 @@ case "$command_name" in
       update_repo_for_multi
       run_multi_manage apply
     else
-      install_latest_cli_from_remote
+      sync_deploy_assets_from_remote
       run_compose pull
       run_compose up -d
       # 提示是否有新 ENV 待合并（不强制）

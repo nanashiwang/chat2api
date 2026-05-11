@@ -113,7 +113,7 @@ auto_pull() {
     fi
     local repo_root
     if ! repo_root="$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)"; then
-        log "非 git 仓库，跳过 git pull"
+        log "非 git 仓库，由 chat2api update 负责同步部署文件"
         return 0
     fi
     local branch
