@@ -1329,7 +1329,8 @@
             </div>
             <nav class="space-y-2 text-sm">
                 <button type="button" data-page-target="overview-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-800 transition">控制台总览</button>
-                <button type="button" data-page-target="accounts-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">账号与令牌</button>
+                <!-- 单容器单账号场景下"账号与令牌"页冗余，2026-05-11 隐藏菜单入口；section/JS 完整保留以便恢复 -->
+                <!-- <button type="button" data-page-target="accounts-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">账号与令牌</button> -->
                 <button type="button" data-page-target="routing-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">代理与路由</button>
                 <button type="button" data-page-target="harvester-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">账号采集 Harvester</button>
                 <button type="button" data-page-target="logs-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">运行日志</button>
