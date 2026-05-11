@@ -466,7 +466,7 @@ $('#btn-probe-models').addEventListener('click', async () => {
     btn.disabled = true;
     btn.textContent = '探测中...';
     try {
-        const d = await api('POST', '/api/instances/' + encodeURIComponent(slug) + '/probe-models', {});
+        const d = await api('POST', '/api/probe-models/' + encodeURIComponent(slug), {});
         const models = (d.models || []).map(id => ({ id, source: 'probe' }));
         if (invokeCurrent) {
             invokeCurrent.models = models;

@@ -833,7 +833,7 @@ async def _probe_models(slug: str, api_prefix: str, auth: str) -> list[str]:
 
 
 @app.post(
-    "/api/instances/{slug}/probe-models",
+    "/api/probe-models/{slug}",
     dependencies=[Depends(require_session), Depends(require_csrf)],
 )
 async def api_probe_models(slug: str, request: Request) -> JSONResponse:
