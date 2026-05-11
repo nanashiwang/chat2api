@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import csv
 import functools
+import hashlib
 import io
 import json
 import logging
@@ -86,6 +87,19 @@ serializer = URLSafeTimedSerializer(SESSION_SECRET, salt="orch-session-v1")
 app = FastAPI(title="chat2api Orchestrator", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+APP_DIR = Path(__file__).parent
+
+
+@functools.lru_cache(maxsize=1)
+def static_version() -> str:
+    """根据前端资源内容生成版本号，避免部署后浏览器继续使用旧 JS/CSS。"""
+    digest = hashlib.sha256()
+    for name in ("static/app.js", "static/styles.css", "static/models_by_plan.json"):
+        try:
+            digest.update((APP_DIR / name).read_bytes())
+        except FileNotFoundError:
+            digest.update(name.encode("utf-8"))
+    return digest.hexdigest()[:12]
 
 # ---------- 工具：subprocess + docker ----------
 
@@ -418,7 +432,10 @@ async def dashboard(
 ) -> Response:
     if not verify_session_token(orch_session):
         return RedirectResponse(url="./login", status_code=303)
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {"request": request, "static_version": static_version()},
+    )
 
 
 # ---------- API: accounts CRUD ----------
@@ -1158,4 +1175,3 @@ async def api_playground_invoke(request: Request) -> JSONResponse:
               reason="exception", error=str(e)[:200], latency_ms=latency_ms)
         return JSONResponse({"ok": False, "latency_ms": latency_ms,
                              "error": str(e)[:300]}, status_code=200)
-

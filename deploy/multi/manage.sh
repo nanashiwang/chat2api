@@ -106,11 +106,17 @@ cmd_apply() {
     log "生成配置..."
     python3 "$DIR/generate.py"
     cleanup_renamed_containers
+    local has_orchestrator=0
     if dc config --services 2>/dev/null | grep -qx orchestrator; then
+        has_orchestrator=1
         log "构建 orchestrator 镜像..."
         dc build orchestrator
     fi
     log "应用 docker compose..."
+    if [ "$has_orchestrator" -eq 1 ]; then
+        # orchestrator 是本地 build 镜像，静态文件变更后必须替换容器才能加载新面板。
+        dc up -d --remove-orphans --force-recreate orchestrator
+    fi
     dc up -d --remove-orphans
     # nginx.conf 变化时 compose 不会重启 nginx，主动 reload
     if docker ps --format '{{.Names}}' | grep -qx c2a-nginx; then
@@ -119,6 +125,9 @@ cmd_apply() {
             || log "nginx reload 失败（首次启动可忽略）"
     fi
     cmd_verify
+    if [ "$has_orchestrator" -eq 1 ]; then
+        cmd_verify_orchestrator
+    fi
     ok "完成。运行 ./manage.sh secrets 查看凭证 / 编排面板访问入口"
 }
 
@@ -307,6 +316,24 @@ cmd_verify() {
     fi
 }
 
+cmd_verify_orchestrator() {
+    require_compose
+    local port="${CHAT2API_GATEWAY_PORT:-60403}"
+    local js_out models_out
+    log "校验 orchestrator 静态资源..."
+    if ! js_out="$(check_contains "http://127.0.0.1:${port}/orchestrator/static/app.js" 'probe-models' 6)"; then
+        err "orchestrator: app.js 仍是旧版本（缺少模型看板代码）"
+        printf '%s\n' "$js_out" | head -3
+        return 1
+    fi
+    if ! models_out="$(check_contains "http://127.0.0.1:${port}/orchestrator/static/models_by_plan.json" '"plans"' 6)"; then
+        err "orchestrator: models_by_plan.json 不可访问"
+        printf '%s\n' "$models_out" | head -3
+        return 1
+    fi
+    ok "orchestrator: 模型看板静态资源正常"
+}
+
 cmd_install_cli() {
     local config_tmp
     config_tmp="$(mktemp)"
@@ -333,6 +360,7 @@ chat2api 多实例运维（一容器一账号）
   ./manage.sh list                          所有容器状态（docker compose ps）
   ./manage.sh status                        状态 + 抽样验证出口 IP
   ./manage.sh verify                        校验每个实例的后台/路由是否串线
+  ./manage.sh verify-orchestrator           校验编排面板模型看板静态资源
   ./manage.sh logs <slug> [N]               跟随该实例日志（默认 200 行）
   ./manage.sh shell <slug>                  进入该实例容器 shell
   ./manage.sh secrets                       打印所有 AUTH / ADMIN_PWD（敏感）
@@ -362,6 +390,7 @@ case "$cmd" in
     list)    cmd_list "$@" ;;
     status)  cmd_status "$@" ;;
     verify)  cmd_verify "$@" ;;
+    verify-orchestrator) cmd_verify_orchestrator "$@" ;;
     logs)    cmd_logs "$@" ;;
     shell)   cmd_shell "$@" ;;
     secrets) cmd_secrets "$@" ;;
