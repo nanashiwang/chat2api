@@ -7,18 +7,18 @@
 # 或下载后：
 #   bash install.sh
 #
-# 本脚本会：
+# 本脚本默认部署多实例编排面板，会：
 #   1. 自动安装 Docker（如缺）
-#   2. 生成随机 ADMIN_PASSWORD / AUTHORIZATION / API_PREFIX
-#   3. 下载 docker-compose 模板（不预设代理，代理请在 UI 里配）
-#   4. 启动服务并打印访问信息
+#   2. 下载 deploy/multi 编排脚本
+#   3. 启动 orchestrator 面板
+#   4. 安装 chat2api 管理命令并打印访问入口
 #
 # 自定义环境变量（可选，脚本启动前 export 即可）：
 #   INSTALL_DIR   安装目录（默认 $HOME/chat2api）
 #   CHAT2API_PORT 监听端口（默认 60403）
 #   GITHUB_RAW    仓库 raw URL（默认官方）
 #   GITHUB_REPO   仓库 URL（默认官方，用于下载 deploy/multi）
-#   CHAT2API_MODE  部署模式：single（默认）/ multi
+#   CHAT2API_MODE  部署模式：multi（默认）/ single
 #   INTERACTIVE   设为 1 进入交互模式（询问密码/前缀）
 # ============================================================
 set -euo pipefail
@@ -36,7 +36,7 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/chat2api}"
 GITHUB_RAW="${GITHUB_RAW:-https://raw.githubusercontent.com/nanashiwang/chat2api/main}"
 GITHUB_REPO="${GITHUB_REPO:-https://github.com/nanashiwang/chat2api}"
 CHAT2API_PORT="${CHAT2API_PORT:-60403}"
-CHAT2API_MODE="${CHAT2API_MODE:-single}"
+CHAT2API_MODE="${CHAT2API_MODE:-multi}"
 INTERACTIVE="${INTERACTIVE:-0}"
 SCRIPT_SOURCE="${BASH_SOURCE[0]-}"
 SCRIPT_SOURCE_DIR=""
@@ -224,10 +224,10 @@ if [ "$CHAT2API_MODE" = "multi" ]; then
                  curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null || \
                  echo 'your-server-ip')"
 
-    cat <<EOF
+cat <<EOF
 
 ============================================================
-${C_OK}✅ chat2api 多实例编排面板已部署完成${C_RESET}
+✅ chat2api 多实例编排面板已部署完成
 ============================================================
 
 📍 访问:
@@ -341,7 +341,7 @@ PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || \
 cat <<EOF
 
 ============================================================
-${C_OK}✅ chat2api 部署完成${C_RESET}
+✅ chat2api 单实例部署完成
 ============================================================
 
 📍 访问:
@@ -362,12 +362,6 @@ ${C_OK}✅ chat2api 部署完成${C_RESET}
    3. "代理与路由"（可选）→ 添加住宅代理 → 给账号绑定
    4. 测试: curl -H "Authorization: Bearer ${AUTHORIZATION}" \\
             http://localhost:${CHAT2API_PORT}/${API_PREFIX}/v1/models
-
-🧩 多实例 / 多容器:
-   - 上面的「管理后台」是单容器后台；多容器总入口请用编排面板:
-     cd ${INSTALL_DIR}/deploy/multi && ./manage.sh init
-   - 完成后访问:
-     http://${PUBLIC_IP}:${CHAT2API_PORT}/orchestrator/
 
 🛡️  安全加固（强烈建议）:
    - 配置 IP 白名单:

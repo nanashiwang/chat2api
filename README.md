@@ -22,7 +22,7 @@
 curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
 ```
 
-脚本自动：装 Docker → 下载 compose → 生成随机 ADMIN/API 密钥 → 启动 → 安装 `chat2api` 管理命令 → 打印访问地址。
+脚本默认部署多实例编排面板：装 Docker → 下载编排脚本 → 启动 orchestrator → 安装 `chat2api` 管理命令 → 打印访问地址。
 
 ### 新增能力一览
 
@@ -155,7 +155,7 @@ docker logs c2a-<slug> | grep session_sticky
 ### 一句话部署
 
 ```bash
-CHAT2API_MODE=multi bash <(curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh)
+curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
 ```
 
 初始化完成后，脚本会直接输出编排面板入口和密码，然后打开：
@@ -354,10 +354,16 @@ curl -N 'http://127.0.0.1:5005/${API_PREFIX}/v1/chat/completions' \
 
 ### 一键部署（推荐）
 
-零交互，自动装 Docker、生成随机凭据、启动服务、安装 `chat2api` 全局命令：
+零交互，默认安装多实例编排面板：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
+```
+
+如需旧的单实例模式：
+
+```bash
+CHAT2API_MODE=single bash <(curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh)
 ```
 
 可选环境变量：
@@ -366,6 +372,7 @@ curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/in
 |---|---|
 | `INSTALL_DIR` | 自定义安装目录（默认 `~/chat2api`） |
 | `CHAT2API_PORT` | 监听端口（默认 `60403`） |
+| `CHAT2API_MODE` | `multi`（默认）或 `single` |
 | `INTERACTIVE=1` | 交互式询问密码 / API 前缀 |
 
 ### 直接源码部署
