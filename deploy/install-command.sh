@@ -40,7 +40,11 @@ if [[ ! -f "$INSTALL_DIR/docker-compose.yml" && ! -f "$INSTALL_DIR/compose.yml" 
   exit 1
 fi
 
-SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]-}"
+SCRIPT_SOURCE_DIR=""
+if [ -n "$SCRIPT_SOURCE" ] && [ -f "$SCRIPT_SOURCE" ]; then
+  SCRIPT_SOURCE_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+fi
 $SUDO mkdir -p /etc
 $SUDO tee /etc/chat2api.env >/dev/null <<EOF
 INSTALL_DIR='$(shell_escape "$INSTALL_DIR")'
@@ -48,7 +52,14 @@ PORT='$(shell_escape "$PORT")'
 API_PREFIX='$(shell_escape "$API_PREFIX")'
 EOF
 
-$SUDO install -m 0755 "$SCRIPT_SOURCE_DIR/chat2api.sh" /usr/local/bin/chat2api
+if [ -n "$SCRIPT_SOURCE_DIR" ] && [ -f "$SCRIPT_SOURCE_DIR/chat2api.sh" ]; then
+  $SUDO install -m 0755 "$SCRIPT_SOURCE_DIR/chat2api.sh" /usr/local/bin/chat2api
+else
+  tmp_script="$(mktemp)"
+  curl -fsSL "https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/chat2api.sh" -o "$tmp_script"
+  $SUDO install -m 0755 "$tmp_script" /usr/local/bin/chat2api
+  rm -f "$tmp_script"
+fi
 
 echo
 echo "Installed."

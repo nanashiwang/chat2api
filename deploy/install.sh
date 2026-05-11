@@ -18,6 +18,7 @@
 #   CHAT2API_PORT 监听端口（默认 60403）
 #   GITHUB_RAW    仓库 raw URL（默认官方）
 #   GITHUB_REPO   仓库 URL（默认官方，用于下载 deploy/multi）
+#   CHAT2API_MODE  部署模式：single（默认）/ multi
 #   INTERACTIVE   设为 1 进入交互模式（询问密码/前缀）
 # ============================================================
 set -euo pipefail
@@ -35,6 +36,7 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/chat2api}"
 GITHUB_RAW="${GITHUB_RAW:-https://raw.githubusercontent.com/nanashiwang/chat2api/main}"
 GITHUB_REPO="${GITHUB_REPO:-https://github.com/nanashiwang/chat2api}"
 CHAT2API_PORT="${CHAT2API_PORT:-60403}"
+CHAT2API_MODE="${CHAT2API_MODE:-single}"
 INTERACTIVE="${INTERACTIVE:-0}"
 SCRIPT_SOURCE="${BASH_SOURCE[0]-}"
 SCRIPT_SOURCE_DIR=""
@@ -204,6 +206,52 @@ EOF
 }
 
 sync_deploy_assets
+
+if [ "$CHAT2API_MODE" = "multi" ]; then
+    if [ ! -x "$INSTALL_DIR/deploy/multi/manage.sh" ]; then
+        err "deploy/multi 未准备好，请检查网络后重试"
+        exit 1
+    fi
+
+    log "启动多实例编排面板..."
+    (
+        cd "$INSTALL_DIR/deploy/multi"
+        CHAT2API_GATEWAY_PORT="$CHAT2API_PORT" ./manage.sh init
+        ./manage.sh install-cli
+    )
+
+    PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || \
+                 curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null || \
+                 echo 'your-server-ip')"
+
+    cat <<EOF
+
+============================================================
+${C_OK}✅ chat2api 多实例编排面板已部署完成${C_RESET}
+============================================================
+
+📍 访问:
+   编排面板:  http://${PUBLIC_IP}:${CHAT2API_PORT}/orchestrator/
+
+🔑 密码:
+   查看命令:  cd ${INSTALL_DIR}/deploy/multi && ./manage.sh secrets
+
+📖 下一步:
+   1. 打开编排面板
+   2. 点「新增账号」
+   3. 填 slug / 代理 / 备注
+   4. 进入对应实例后台粘贴 Cookie
+
+📋 常用命令:
+   chat2api update
+   chat2api status
+   chat2api secrets
+
+============================================================
+
+EOF
+    exit 0
+fi
 
 # ----- 下载 compose 模板 -----
 if [ -f docker-compose.yml ]; then

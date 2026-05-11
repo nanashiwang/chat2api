@@ -155,19 +155,20 @@ docker logs c2a-<slug> | grep session_sticky
 ### 一句话部署
 
 ```bash
-# 1. 先用一键脚本把 chat2api 装好
-curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh | bash
-
-# 2. 初始化多实例编排面板
-cd ~/chat2api/deploy/multi
-./manage.sh init         # 启动 orchestrator 面板；账号后续在 UI 新增
-./manage.sh install-cli  # 让全局 chat2api 命令切到多实例模式
+CHAT2API_MODE=multi bash <(curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/install.sh)
 ```
 
-初始化完成后运行 `./manage.sh secrets` 查看编排面板入口和密码，然后打开：
+初始化完成后，脚本会直接输出编排面板入口和密码，然后打开：
 
 ```text
 http://<vps>:60403/orchestrator/
+```
+
+如果你已经用一键脚本装了单实例，请走迁移流程，避免 60403 端口冲突：
+
+```bash
+chat2api migrate prep
+chat2api migrate apply
 ```
 
 进入面板后点「新增账号」，填写 `slug`、代理和备注即可；不需要手动编辑 `accounts.csv`。
