@@ -512,14 +512,38 @@ console.log(resp.choices[0].message.content);`,
     };
 }
 
-async function copyToClipboard(text, btn) {
+function fallbackCopyToClipboard(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
     try {
-        await navigator.clipboard.writeText(text);
-        const orig = btn.textContent;
+        ok = document.execCommand('copy');
+    } finally {
+        document.body.removeChild(ta);
+    }
+    if (!ok) throw new Error('浏览器拒绝复制，请手动选中文本复制');
+}
+
+async function copyToClipboard(text, btn) {
+    const orig = btn.textContent;
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            fallbackCopyToClipboard(text);
+        }
         btn.textContent = '✓ 已复制';
         setTimeout(() => { btn.textContent = orig; }, 1500);
     } catch (e) {
-        toast('复制失败：' + e.message, true);
+        btn.textContent = orig;
+        toast('复制失败：' + (e.message || '当前浏览器不允许在 HTTP 页面直接复制'), true);
     }
 }
 
