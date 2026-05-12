@@ -302,13 +302,23 @@ async function showUnifiedApi() {
         const d = await api('GET', '/api/unified');
         const baseUrl = location.origin + (d.base_path || '/v1');
         const chatUrl = location.origin + (d.chat_completions_path || '/v1/chat/completions');
+        const responsesUrl = location.origin + (d.responses_path || '/v1/responses');
+        const compactUrl = location.origin + (d.responses_compact_path || '/v1/responses/compact');
         $('#unified-base-url').textContent = baseUrl;
         $('#unified-api-key').textContent = d.api_key;
+        $('#unified-chat-url').textContent = chatUrl;
+        $('#unified-responses-url').textContent = responsesUrl;
+        $('#unified-compact-url').textContent = compactUrl;
         $('#unified-curl').textContent =
 `curl ${chatUrl} \\
   -H "Authorization: Bearer ${d.api_key}" \\
   -H "Content-Type: application/json" \\
-  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"你好"}]}'`;
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"你好"}]}'
+
+curl ${responsesUrl} \\
+  -H "Authorization: Bearer ${d.api_key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"gpt-4o-mini","input":"你好"}'`;
         $('#unified-strategy').textContent = d.strategy || '';
         $('#modal-unified-api').classList.remove('hidden');
         $('#modal-unified-api').classList.add('flex');

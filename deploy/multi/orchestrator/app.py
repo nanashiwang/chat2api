@@ -841,14 +841,20 @@ async def api_unified_credentials(request: Request) -> JSONResponse:
         raise HTTPException(status_code=503, detail="统一 API Key 未生成，请重新 ./manage.sh apply")
     base_path = "/v1"
     chat_path = "/v1/chat/completions"
+    responses_path = "/v1/responses"
+    compact_path = "/v1/responses/compact"
     audit("reveal_unified_api", request, True)
     return JSONResponse({
         "base_path": base_path,
         "chat_completions_path": chat_path,
+        "responses_path": responses_path,
+        "responses_compact_path": compact_path,
         "base_url": public_url(request, base_path),
         "chat_completions_url": public_url(request, chat_path),
+        "responses_url": public_url(request, responses_path),
+        "responses_compact_url": public_url(request, compact_path),
         "api_key": key,
-        "strategy": "无会话键时轮询；有 librechat_conversation_id / conversation_id / X-Chat2API-Affinity 时固定到同一容器",
+        "strategy": "支持 /v1/chat/completions、/v1/responses、/v1/responses/compact；无会话键时轮询，有会话键时固定到同一容器",
     })
 
 
