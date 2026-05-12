@@ -109,51 +109,216 @@ function renderInlineModels(models, maxVisible = 4) {
     return `<div class="flex flex-wrap gap-1 mt-1 max-w-md">${chips}${moreBadge}</div>`;
 }
 
-function renderRows(instances) {
-    if (!instances.length) {
-        $('#tbody').innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400">暂无账号，点击右上角「新增账号」开始</td></tr>';
+let latestInstances = [];
+let selectedSlug = '';
+let instanceSearchQuery = '';
+
+function isHealthy(it) {
+    return it.state === 'running' && it.health === 'healthy';
+}
+
+function isCookieFresh(it) {
+    if (!it.cookie_last_success_at) return false;
+    return Math.floor(Date.now() / 1000 - it.cookie_last_success_at) < 3600;
+}
+
+function instanceInitial(it) {
+    return String(it.note || it.slug || 'A').trim().slice(0, 1).toUpperCase();
+}
+
+function statusPill(it) {
+    if (isHealthy(it)) {
+        return '<span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700"><span class="status-dot bg-emerald-500"></span>Healthy</span>';
+    }
+    if (it.state === 'running') {
+        return `<span class="inline-flex items-center gap-1.5 rounded-full bg-orange-50 px-2.5 py-1 text-xs font-bold text-orange-700"><span class="status-dot bg-orange-500"></span>${escapeHtml(it.health || 'running')}</span>`;
+    }
+    return `<span class="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600"><span class="status-dot bg-slate-400"></span>${escapeHtml(it.state || 'absent')}</span>`;
+}
+
+function planPill(it) {
+    const label = it.plan_label || it.plan_type || '未知';
+    return `<span class="inline-flex rounded-lg border border-blue-100 bg-blue-50 px-2 py-1 text-xs font-bold text-blue-700">${escapeHtml(label)}</span>`;
+}
+
+function getFilteredInstances() {
+    const q = instanceSearchQuery.trim().toLowerCase();
+    if (!q) return latestInstances;
+    return latestInstances.filter(it => [
+        it.slug,
+        it.note,
+        it.proxy_masked,
+        it.exit_ip,
+        it.state,
+        it.health,
+        it.plan_label,
+        it.plan_type,
+        ...(it.models || []),
+    ].some(v => String(v || '').toLowerCase().includes(q)));
+}
+
+function renderMetrics(instances) {
+    const total = instances.length;
+    const healthy = instances.filter(isHealthy).length;
+    const degraded = total - healthy;
+    const proxied = instances.filter(it => it.has_proxy).length;
+    const models = instances.reduce((sum, it) => sum + ((it.models || []).length), 0);
+    const fresh = instances.filter(isCookieFresh).length;
+    const pairs = [
+        ['#metric-total', total],
+        ['#metric-healthy', healthy],
+        ['#metric-degraded', degraded],
+        ['#metric-proxy', proxied],
+        ['#metric-models', models],
+        ['#metric-cookie', fresh],
+    ];
+    for (const [sel, val] of pairs) {
+        const el = $(sel);
+        if (el) el.textContent = val;
+    }
+}
+
+function renderDetail(it) {
+    const empty = $('#detail-empty');
+    const body = $('#detail-body');
+    if (!empty || !body) return;
+    if (!it) {
+        empty.classList.remove('hidden');
+        body.classList.add('hidden');
+        body.innerHTML = '';
         return;
     }
-    $('#tbody').innerHTML = instances.map(it => `
-        <tr class="border-t border-gray-100 hover:bg-gray-50">
-            <td class="px-4 py-2">
-                <div class="font-medium text-gray-900">${escapeHtml(it.note || it.slug)}</div>
-                ${it.note ? `<div class="text-xs text-gray-400 kbd-row">${escapeHtml(it.slug)}</div>` : ''}
+    empty.classList.add('hidden');
+    body.classList.remove('hidden');
+    body.innerHTML = `
+        <div class="flex items-start gap-3">
+            <div class="grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 text-lg font-black text-white">${escapeHtml(instanceInitial(it))}</div>
+            <div class="min-w-0">
+                <div class="truncate text-base font-black text-slate-950">${escapeHtml(it.note || it.slug)}</div>
+                <div class="mt-1 font-mono text-xs text-slate-400">${escapeHtml(it.slug)}</div>
+            </div>
+        </div>
+        <div class="mt-5 flex flex-wrap gap-2">${statusPill(it)}${planPill(it)}</div>
+        <div class="mt-5 space-y-3 text-sm">
+            <div class="rounded-2xl bg-slate-50 p-3">
+                <div class="text-xs font-semibold text-slate-400">代理</div>
+                <div class="mt-1 break-all font-mono text-xs text-slate-600">${escapeHtml(it.proxy_masked || '未绑定')}</div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div class="rounded-2xl bg-slate-50 p-3"><div class="text-xs font-semibold text-slate-400">出口 IP</div><div class="mt-1 font-bold text-slate-800">${escapeHtml(it.exit_ip || '?')}</div></div>
+                <div class="rounded-2xl bg-slate-50 p-3"><div class="text-xs font-semibold text-slate-400">运行时长</div><div class="mt-1 font-bold text-slate-800">${fmtUptime(it.uptime_seconds)}</div></div>
+            </div>
+            <div class="rounded-2xl bg-slate-50 p-3">
+                <div class="text-xs font-semibold text-slate-400">Cookie 鲜度</div>
+                <div class="mt-1 text-sm font-bold">${fmtCookieAge(it.cookie_last_success_at)}</div>
+            </div>
+            <div class="rounded-2xl bg-slate-50 p-3">
+                <div class="text-xs font-semibold text-slate-400">可用模型</div>
+                ${renderInlineModels(it.models, 12)}
+            </div>
+        </div>
+        <div class="mt-5 grid grid-cols-2 gap-2">
+            <button class="row-action-btn border border-indigo-100 bg-indigo-50 text-indigo-700" data-action="invoke" data-slug="${escapeHtml(it.slug)}">调用</button>
+            <button class="row-action-btn border border-blue-100 bg-blue-50 text-blue-700" data-action="secret" data-slug="${escapeHtml(it.slug)}">凭证</button>
+            <button class="row-action-btn border border-slate-200 bg-white text-slate-700" data-action="edit" data-slug="${escapeHtml(it.slug)}" data-proxy="${escapeHtml(it.proxy_masked || '')}" data-note="${escapeHtml(it.note || '')}">编辑</button>
+            <button class="row-action-btn border border-orange-100 bg-orange-50 text-orange-700" data-action="restart" data-slug="${escapeHtml(it.slug)}">重启</button>
+            ${it.state === 'running'
+                ? `<button class="row-action-btn border border-yellow-100 bg-yellow-50 text-yellow-700" data-action="stop" data-slug="${escapeHtml(it.slug)}">停止</button>`
+                : `<button class="row-action-btn border border-emerald-100 bg-emerald-50 text-emerald-700" data-action="start" data-slug="${escapeHtml(it.slug)}">启动</button>`}
+            <button class="row-action-btn border border-red-100 bg-red-50 text-red-600" data-action="delete" data-slug="${escapeHtml(it.slug)}">删除</button>
+        </div>
+    `;
+    $$('#detail-body button').forEach(btn => {
+        btn.addEventListener('click', () => onRowAction(btn.dataset));
+    });
+}
+
+function selectInstance(slug) {
+    selectedSlug = slug || '';
+    renderRows(getFilteredInstances(), false);
+    renderDetail(latestInstances.find(it => it.slug === selectedSlug));
+}
+
+function renderRows(instances, updateDetail = true) {
+    const tbody = $('#tbody');
+    if (!tbody) return;
+    const count = $('#table-count');
+    if (count) count.textContent = `${instances.length} / ${latestInstances.length} 个实例`;
+    if (!instances.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-12 text-center text-slate-400">暂无匹配实例，清空搜索或新增账号。</td></tr>';
+        if (updateDetail) renderDetail(null);
+        return;
+    }
+    if (!selectedSlug || !latestInstances.some(it => it.slug === selectedSlug)) {
+        selectedSlug = instances[0].slug;
+    }
+    tbody.innerHTML = instances.map(it => {
+        const selected = it.slug === selectedSlug;
+        return `
+        <tr class="instance-row cursor-pointer border-t border-slate-100 ${selected ? 'bg-blue-50/70' : 'bg-white'}" data-slug="${escapeHtml(it.slug)}">
+            <td class="py-4 pl-4 pr-3">
+                <div class="flex items-center gap-3">
+                    <div class="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 text-sm font-black text-white shadow-sm">${escapeHtml(instanceInitial(it))}</div>
+                    <div class="min-w-0"><div class="truncate font-semibold text-slate-950">${escapeHtml(it.note || it.slug)}</div><div class="mt-1 font-mono text-xs text-slate-400">${escapeHtml(it.slug)}</div></div>
+                </div>
             </td>
-            <td class="px-4 py-2 kbd-row text-xs text-gray-600">${escapeHtml(it.proxy_masked || '-')}</td>
-            <td class="px-4 py-2">${healthBadge(it.state, it.health)}</td>
-            <td class="px-4 py-2 kbd-row text-xs text-gray-600">${escapeHtml(it.exit_ip || '?')}</td>
-            <td class="px-4 py-2 text-xs text-gray-500">${fmtUptime(it.uptime_seconds)}</td>
-            <td class="px-4 py-2 text-xs">${fmtCookieAge(it.cookie_last_success_at)}</td>
-            <td class="px-4 py-2">
-                <button class="row-action-btn text-indigo-600 font-medium" data-action="invoke" data-slug="${escapeHtml(it.slug)}">📡 调用</button>
-                ${renderInlineModels(it.models, 4)}
-            </td>
-            <td class="px-4 py-2 text-right whitespace-nowrap">
+            <td class="px-3 py-4"><div class="flex flex-wrap items-center gap-2">${planPill(it)}</div>${renderInlineModels(it.models, 3)}</td>
+            <td class="px-3 py-4 max-w-56 truncate font-mono text-xs text-slate-500">${escapeHtml(it.proxy_masked || '-')}</td>
+            <td class="px-3 py-4">${statusPill(it)}</td>
+            <td class="px-3 py-4 font-mono text-xs text-slate-600">${escapeHtml(it.exit_ip || '?')}</td>
+            <td class="px-3 py-4 text-xs">${fmtCookieAge(it.cookie_last_success_at)}</td>
+            <td class="px-3 py-4 text-xs text-slate-500">${fmtUptime(it.uptime_seconds)}</td>
+            <td class="py-4 pl-3 pr-4 text-right whitespace-nowrap">
+                <button class="row-action-btn text-indigo-600" data-action="invoke" data-slug="${escapeHtml(it.slug)}">调用</button>
                 <button class="row-action-btn text-blue-600" data-action="secret" data-slug="${escapeHtml(it.slug)}">凭证</button>
-                <button class="row-action-btn text-gray-700" data-action="edit" data-slug="${escapeHtml(it.slug)}" data-proxy="${escapeHtml(it.proxy_masked || '')}" data-note="${escapeHtml(it.note || '')}">编辑</button>
+                <button class="row-action-btn text-slate-700" data-action="edit" data-slug="${escapeHtml(it.slug)}" data-proxy="${escapeHtml(it.proxy_masked || '')}" data-note="${escapeHtml(it.note || '')}">编辑</button>
                 <button class="row-action-btn text-orange-600" data-action="restart" data-slug="${escapeHtml(it.slug)}">重启</button>
                 ${it.state === 'running'
                     ? `<button class="row-action-btn text-yellow-600" data-action="stop" data-slug="${escapeHtml(it.slug)}">停止</button>`
                     : `<button class="row-action-btn text-green-600" data-action="start" data-slug="${escapeHtml(it.slug)}">启动</button>`}
                 <button class="row-action-btn text-red-600" data-action="delete" data-slug="${escapeHtml(it.slug)}">删除</button>
             </td>
-        </tr>
-    `).join('');
+        </tr>`;
+    }).join('');
 
     $$('#tbody button').forEach(btn => {
-        btn.addEventListener('click', () => onRowAction(btn.dataset));
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            onRowAction(btn.dataset);
+        });
     });
+    $$('#tbody .instance-row').forEach(row => {
+        row.addEventListener('click', () => selectInstance(row.dataset.slug));
+    });
+    if (updateDetail) renderDetail(latestInstances.find(it => it.slug === selectedSlug));
 }
 
 async function loadStatus() {
     try {
         const data = await api('GET', '/api/status');
-        renderRows(data.instances);
-        $('#server-status').textContent = `共 ${data.instances.length} 个实例 · 服务器时间 ${new Date(data.server_time*1000).toLocaleTimeString()}`;
+        latestInstances = data.instances || [];
+        renderMetrics(latestInstances);
+        renderRows(getFilteredInstances());
+        const serverTime = new Date(data.server_time * 1000);
+        const statusText = `共 ${latestInstances.length} 个实例 · 服务器时间 ${serverTime.toLocaleTimeString()}`;
+        $('#server-status').textContent = statusText;
+        const serverTimeEl = $('#server-time');
+        if (serverTimeEl) serverTimeEl.textContent = serverTime.toLocaleString('zh-CN', { hour12: false });
     } catch (e) {
         toast('加载状态失败：' + e.message, true);
     }
+}
+
+const instanceSearchInput = $('#instance-search');
+if (instanceSearchInput) {
+    instanceSearchInput.addEventListener('input', () => {
+        instanceSearchQuery = instanceSearchInput.value || '';
+        renderRows(getFilteredInstances());
+    });
+}
+const clearDetailButton = $('#btn-clear-detail');
+if (clearDetailButton) {
+    clearDetailButton.addEventListener('click', () => selectInstance(''));
 }
 
 // ---------- 模态 ----------

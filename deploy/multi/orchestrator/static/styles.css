@@ -1,19 +1,77 @@
-/* 极简补丁，绝大多数样式由 Tailwind CDN 提供 */
-.row-action-btn {
-    padding: 0.25rem 0.5rem;
-    font-size: 0.75rem;
-    border-radius: 0.25rem;
-    margin-right: 0.25rem;
+:root {
+    --panel: rgba(255, 255, 255, 0.88);
+    --line: #e6edf7;
+    --brand: #2563eb;
 }
-.row-action-btn:hover { background: #f3f4f6; }
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+body {
+    background:
+        radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 34rem),
+        linear-gradient(135deg, #f8fbff 0%, #eef4fb 48%, #f8fafc 100%);
+    font-family: ui-rounded, "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+.glass-panel {
+    background: var(--panel);
+    border: 1px solid rgba(226, 232, 240, 0.88);
+    box-shadow: 0 18px 55px rgba(15, 23, 42, 0.07);
+    backdrop-filter: blur(18px);
+}
+.metric-card {
+    min-height: 112px;
+    border: 1px solid var(--line);
+    border-radius: 1.25rem;
+    background: linear-gradient(145deg, #fff, #f8fbff);
+    box-shadow: 0 12px 36px rgba(15, 23, 42, 0.06);
+}
+.orch-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    border-radius: 1rem;
+    padding: 0.78rem 0.9rem;
+    color: #526179;
+    transition: 160ms ease;
+    text-align: left;
+}
+.orch-nav-item:hover {
+    background: #f1f5f9;
+    color: var(--brand);
+}
+.orch-nav-active {
+    background: linear-gradient(90deg, #eaf2ff, #f8fbff);
+    color: var(--brand);
+    box-shadow: inset 3px 0 0 var(--brand);
+    font-weight: 800;
+}
+.admin-table th {
+    color: #64748b;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.admin-table tbody tr { transition: 140ms ease; }
+.admin-table tbody tr:hover { background: #f8fbff; }
+.status-dot, .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    margin-right: 6px;
+}
 .dot-healthy { background: #10b981; }
 .dot-unhealthy { background: #ef4444; }
 .dot-starting { background: #f59e0b; }
 .dot-na { background: #9ca3af; }
-.kbd-row { font-family: ui-monospace, SFMono-Regular, monospace; }
-
-/* 调用面板：模型 chip */
+.kbd-row { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.row-action-btn {
+    padding: 0.45rem 0.65rem;
+    font-size: 0.75rem;
+    border-radius: 0.75rem;
+    margin-right: 0.2rem;
+    font-weight: 700;
+}
+.row-action-btn:hover { background: #f1f5f9; }
 .model-chip {
     display: inline-flex;
     align-items: center;
@@ -26,18 +84,15 @@
     border-radius: 9999px;
     line-height: 1.2;
 }
-
-/* 调用面板：代码块 */
 .code-block {
     font-family: ui-monospace, SFMono-Regular, monospace;
     line-height: 1.45;
     white-space: pre;
 }
-
-/* playground 加载 spinner */
 .pg-loading-spinner {
     display: inline-block;
-    width: 12px; height: 12px;
+    width: 12px;
+    height: 12px;
     border: 2px solid rgba(255,255,255,0.35);
     border-top-color: white;
     border-radius: 50%;
@@ -46,4 +101,23 @@
     margin-right: 4px;
 }
 @keyframes pg-spin { to { transform: rotate(360deg); } }
-
+@media (max-width: 1023px) {
+    .orch-shell { display: block; }
+    .orch-sidebar {
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        width: 100%;
+        min-height: 0;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+    }
+    .orch-nav {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: max-content;
+        overflow-x: auto;
+        padding-bottom: 0.25rem;
+    }
+    .orch-nav-item { white-space: nowrap; }
+}
