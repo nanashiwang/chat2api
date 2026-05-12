@@ -1,5 +1,7 @@
 import asyncio
+import time
 import types
+import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Request, HTTPException, Form, Security
@@ -20,6 +22,159 @@ from utils import antiban
 from utils.antiban import circuit as antiban_circuit
 
 scheduler = AsyncIOScheduler()
+
+
+def _responses_input_to_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        chunks = []
+        for item in value:
+            if isinstance(item, str):
+                chunks.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type in {"input_text", "output_text", "text"}:
+                text = item.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+            elif item_type == "message":
+                chunks.append(_responses_input_to_messages(item))
+        return "\n".join(part for part in chunks if part)
+    if isinstance(value, dict):
+        if isinstance(value.get("text"), str):
+            return value["text"]
+        if isinstance(value.get("content"), list):
+            return _responses_input_to_text(value["content"])
+    return str(value)
+
+
+def _responses_input_to_messages(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        role = value.get("role")
+        if role in {"system", "developer", "user", "assistant"}:
+            content = _responses_input_to_text(value.get("content"))
+            return {"role": role, "content": content or ""}
+    return None
+
+
+def _convert_responses_request_to_chat(payload):
+    messages = []
+    instructions = payload.get("instructions")
+    if isinstance(instructions, str) and instructions.strip():
+        messages.append({"role": "system", "content": instructions.strip()})
+
+    raw_input = payload.get("input")
+    if isinstance(raw_input, str):
+        messages.append({"role": "user", "content": raw_input})
+    elif isinstance(raw_input, list):
+        for item in raw_input:
+            message = _responses_input_to_messages(item)
+            if message:
+                messages.append(message)
+            else:
+                text = _responses_input_to_text(item)
+                if text:
+                    messages.append({"role": "user", "content": text})
+    elif raw_input is not None:
+        text = _responses_input_to_text(raw_input)
+        if text:
+            messages.append({"role": "user", "content": text})
+
+    if not messages:
+        raise HTTPException(status_code=400, detail={"error": "input is required"})
+
+    chat_payload = {
+        "model": payload.get("model"),
+        "messages": messages,
+        "stream": bool(payload.get("stream", False)),
+    }
+    for key in (
+        "temperature",
+        "top_p",
+        "max_output_tokens",
+        "presence_penalty",
+        "frequency_penalty",
+        "user",
+    ):
+        if key in payload:
+            value = payload[key]
+            if key == "max_output_tokens":
+                chat_payload["max_tokens"] = value
+            else:
+                chat_payload[key] = value
+    return chat_payload
+
+
+def _convert_chat_response_to_responses(chat_response, request_payload):
+    choice = ((chat_response or {}).get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    output_text = message.get("content", "") or ""
+    usage = chat_response.get("usage") or {}
+    created = int(time.time())
+    response_id = f"resp_{uuid.uuid4().hex}"
+    model = chat_response.get("model") or request_payload.get("model")
+    return {
+        "id": response_id,
+        "object": "response",
+        "created_at": created,
+        "status": "completed",
+        "model": model,
+        "output": [
+            {
+                "id": f"msg_{uuid.uuid4().hex}",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": output_text,
+                        "annotations": [],
+                    }
+                ],
+            }
+        ],
+        "output_text": output_text,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        },
+        "finish_reason": choice.get("finish_reason"),
+    }
+
+
+def _compact_responses_payload(data):
+    usage = data.get("usage") or {}
+    return {
+        "id": data.get("id"),
+        "object": "response.compact",
+        "model": data.get("model"),
+        "output_text": data.get("output_text", ""),
+        "finish_reason": data.get("finish_reason"),
+        "usage": usage,
+    }
+
+
+async def _process_responses_request(request_data, req_token):
+    chat_request_data = _convert_responses_request_to_chat(request_data)
+    if chat_request_data.get("stream"):
+        raise HTTPException(status_code=400, detail={"error": "stream responses is not supported yet"})
+
+    chat_service, res = await async_retry(process, chat_request_data, req_token)
+    try:
+        if isinstance(res, types.AsyncGeneratorType):
+            raise HTTPException(status_code=400, detail={"error": "stream responses is not supported yet"})
+        return _convert_chat_response_to_responses(res, request_data)
+    finally:
+        await chat_service.close_client()
 
 
 @app.on_event("startup")
@@ -144,6 +299,39 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
         logger.error(f"Server error, {str(e)}")
         raise HTTPException(status_code=500, detail="Server error")
 
+
+@app.post(f"/{api_prefix}/v1/responses" if api_prefix else "/v1/responses")
+async def send_responses(request: Request, credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
+    req_token = credentials.credentials
+    try:
+        request_data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"error": "Invalid JSON body"})
+    try:
+        response_payload = await _process_responses_request(request_data, req_token)
+        return JSONResponse(response_payload, media_type="application/json")
+    except HTTPException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except Exception as e:
+        logger.error(f"Server error, {str(e)}")
+        raise HTTPException(status_code=500, detail="Server error")
+
+
+@app.post(f"/{api_prefix}/v1/responses/compact" if api_prefix else "/v1/responses/compact")
+async def send_responses_compact(request: Request, credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
+    req_token = credentials.credentials
+    try:
+        request_data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"error": "Invalid JSON body"})
+    try:
+        data = await _process_responses_request(request_data, req_token)
+        return JSONResponse(_compact_responses_payload(data), media_type="application/json")
+    except HTTPException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except Exception as e:
+        logger.error(f"Server error, {str(e)}")
+        raise HTTPException(status_code=500, detail="Server error")
 
 @app.get(f"/{api_prefix}/v1/models" if api_prefix else "/v1/models")
 async def list_models(request: Request, credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
