@@ -71,6 +71,10 @@ orch_password() {
     awk -F= '$1=="ORCH_PASSWORD"{print $2}' "$GEN_DIR/orch.env" 2>/dev/null | tail -1
 }
 
+orch_api_key() {
+    awk -F= '$1=="ORCH_API_KEY"{print $2}' "$GEN_DIR/orch.env" 2>/dev/null | tail -1
+}
+
 cmd_access_summary() {
     [ -f "$GEN_DIR/orch.env" ] || return 0
     local port host orch_pwd
@@ -84,6 +88,10 @@ cmd_access_summary() {
 ============================================================
 URL:            http://${host}:${port}/orchestrator/
 ORCH_PASSWORD:  ${orch_pwd:-见 $GEN_DIR/orch.env}
+
+统一 API:
+  BASE_URL:     http://${host}:${port}/v1
+  API_KEY:      $(orch_api_key)
 
 单个实例后台 / API 凭证:
   ./manage.sh secrets
@@ -258,7 +266,15 @@ cmd_secrets() {
         grep '^ORCH_PASSWORD=' "$GEN_DIR/orch.env" 2>/dev/null \
             | sed 's/^/  /'
         local port="${CHAT2API_GATEWAY_PORT:-60403}"
-        echo "  URL: http://$(public_host):${port}/orchestrator/"
+        local host
+        host="$(public_host)"
+        echo "  URL: http://${host}:${port}/orchestrator/"
+        echo
+        echo "============ 统一 API（自动均衡所有实例） ============"
+        grep '^ORCH_API_KEY=' "$GEN_DIR/orch.env" 2>/dev/null \
+            | sed 's/^/  /'
+        echo "  BASE_URL: http://${host}:${port}/v1"
+        echo "  CHAT:     http://${host}:${port}/v1/chat/completions"
         echo "==============================================="
     fi
 }

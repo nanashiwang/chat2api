@@ -16,6 +16,7 @@
             <p class="text-xs text-gray-500" id="server-status">加载中...</p>
         </div>
         <div class="flex items-center gap-2">
+            <button id="btn-unified-api" class="text-sm px-3 py-1.5 bg-green-100 hover:bg-green-200 text-green-700 rounded">🔑 统一 API</button>
             <button id="btn-summary" class="text-sm px-3 py-1.5 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded">📊 调用汇总</button>
             <button id="btn-playground" class="text-sm px-3 py-1.5 bg-pink-100 hover:bg-pink-200 text-pink-700 rounded">🎮 试调用</button>
             <button id="btn-refresh" class="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded">刷新</button>
@@ -121,6 +122,38 @@
                 <button type="submit" id="btn-save-admin-center" class="px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded">保存</button>
             </div>
         </form>
+    </div>
+</div>
+
+<!-- 模态：统一 API -->
+<div id="modal-unified-api" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">统一 API（自动均衡）</h3>
+            <button id="btn-close-unified-api" class="text-gray-400 hover:text-gray-600">×</button>
+        </div>
+        <div class="space-y-3 text-sm">
+            <div class="text-xs text-gray-500">外部系统只需要配置下面这一组 URL / Key；Orchestrator 会在后端容器之间自动选择实例。</div>
+            <div>
+                <div class="text-xs text-gray-500 mb-1">Base URL</div>
+                <div class="flex gap-2">
+                    <code id="unified-base-url" class="bg-gray-100 px-2 py-1 rounded text-xs break-all flex-1"></code>
+                    <button class="copy-btn text-xs px-2 py-1 bg-green-600 text-white rounded" data-copy-target="unified-base-url">复制</button>
+                </div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500 mb-1">API Key</div>
+                <div class="flex gap-2">
+                    <code id="unified-api-key" class="bg-gray-100 px-2 py-1 rounded text-xs break-all flex-1"></code>
+                    <button class="copy-btn text-xs px-2 py-1 bg-green-600 text-white rounded" data-copy-target="unified-api-key">复制</button>
+                </div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500 mb-1">curl 示例</div>
+                <pre id="unified-curl" class="code-block bg-gray-900 text-gray-100 p-3 rounded text-xs overflow-auto"></pre>
+            </div>
+            <div id="unified-strategy" class="text-xs text-gray-500"></div>
+        </div>
     </div>
 </div>
 

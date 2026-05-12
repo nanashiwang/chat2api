@@ -352,6 +352,13 @@ http {
 """
 
 NGINX_ORCH_LOCATION = """\
+        # ---- unified OpenAI-compatible API (load-balanced by orchestrator) ----
+        location /v1/ {
+            proxy_pass http://c2a-orchestrator:8080/v1/;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection '';
+        }
+
         # ---- orchestrator (编排面板) ----
         location /orchestrator/ {
             proxy_pass http://c2a-orchestrator:8080/;
@@ -460,7 +467,7 @@ def cleanup_orphan_envs(accounts: list[Account]) -> None:
 
 
 def ensure_orch_env() -> tuple[str, bool]:
-    """orchestrator 凭证：首次自动生成 24 位密码 + 64 字符 session secret。
+    """orchestrator 凭证：首次自动生成登录密码、会话密钥和统一 API key。
 
     返回 (password, was_generated)。
     """
@@ -469,16 +476,32 @@ def ensure_orch_env() -> tuple[str, bool]:
         username = env.get("ORCH_USERNAME", "")
         pwd = env.get("ORCH_PASSWORD", "")
         secret = env.get("ORCH_SESSION_SECRET", "")
+        api_key = env.get("ORCH_API_KEY", "")
+        changed = False
+        if not username:
+            env["ORCH_USERNAME"] = "admin"
+            changed = True
+        if not api_key:
+            env["ORCH_API_KEY"] = "sk-orch-" + pysecrets.token_hex(24)
+            changed = True
         if pwd and secret:
+            if changed:
+                body = "# 自动生成 — orchestrator 凭证（generate.py 维护）\n"
+                for key in ("ORCH_USERNAME", "ORCH_PASSWORD", "ORCH_SESSION_SECRET", "ORCH_API_KEY"):
+                    if env.get(key):
+                        body += f"{key}={env[key]}\n"
+                write_file(ORCH_ENV, body, mode=0o600)
             return pwd, False
     username = "admin"
     pwd = gen_admin_password()
     secret = pysecrets.token_hex(32)
+    api_key = "sk-orch-" + pysecrets.token_hex(24)
     body = (
         "# 自动生成 — orchestrator 凭证（generate.py 维护）\n"
         f"ORCH_USERNAME={username}\n"
         f"ORCH_PASSWORD={pwd}\n"
         f"ORCH_SESSION_SECRET={secret}\n"
+        f"ORCH_API_KEY={api_key}\n"
     )
     write_file(ORCH_ENV, body, mode=0o600)
     return pwd, True

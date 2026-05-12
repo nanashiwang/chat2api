@@ -40,11 +40,12 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, Field, field_validator
+from starlette.background import BackgroundTask
 
 # ---------- 配置 ----------
 
@@ -67,6 +68,7 @@ SESSION_SECRET = (os.environ.get("ORCH_SESSION_SECRET") or "").strip()
 SESSION_MAX_AGE = 8 * 3600  # 8h
 SESSION_COOKIE = "orch_session"
 CSRF_COOKIE = "orch_csrf"
+UNIFIED_API_KEY_ENV = "ORCH_API_KEY"
 
 if not PASSWORD or not SESSION_SECRET:
     raise RuntimeError(
@@ -256,6 +258,173 @@ def mask_secret(s: str, head: int = 6, tail: int = 4) -> str:
     return f"{s[:head]}...{s[-tail:]}"
 
 
+def public_origin(request: Request) -> str:
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or "localhost"
+    return f"{proto}://{host}"
+
+
+def unified_api_key() -> str:
+    env = read_env_file(ORCH_ENV)
+    return (env.get(UNIFIED_API_KEY_ENV) or os.environ.get(UNIFIED_API_KEY_ENV) or "").strip()
+
+
+def require_unified_api_key(request: Request) -> None:
+    expected = unified_api_key()
+    if not expected:
+        raise HTTPException(status_code=503, detail="统一 API Key 未生成，请重新 ./manage.sh apply")
+    auth = (request.headers.get("authorization") or "").strip()
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else auth
+    if not pysecrets.compare_digest(token, expected):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def _extract_json_body(body: bytes, content_type: str) -> dict[str, Any]:
+    if not body or "json" not in content_type.lower():
+        return {}
+    try:
+        data = json.loads(body.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _affinity_key(request: Request, body_json: dict[str, Any]) -> str:
+    for header in ("x-chat2api-affinity", "x-conversation-id", "x-request-affinity"):
+        val = (request.headers.get(header) or "").strip()
+        if val:
+            return val
+    for key in (
+        "chat2api_affinity_key",
+        "librechat_conversation_id",
+        "conversation_id",
+        "parent_conversation_id",
+    ):
+        val = body_json.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def _candidate_models(slug: str) -> set[str]:
+    try:
+        info = _get_instance_info(slug)
+        return {
+            (m.get("id") if isinstance(m, dict) else str(m))
+            for m in info.get("models", [])
+            if m
+        }
+    except Exception:
+        return set()
+
+
+def _backend_candidates(model: str = "") -> list[dict[str, str]]:
+    all_rows: list[dict[str, str]] = []
+    matched: list[dict[str, str]] = []
+    for row in read_accounts():
+        slug = row["slug"]
+        env = read_env_file(WORK / "generated" / "env" / f"{slug}.env")
+        auth = env.get("AUTHORIZATION", "")
+        prefix = env.get("API_PREFIX", "")
+        if not auth or not prefix:
+            continue
+        item = {"slug": slug, "auth": auth, "api_prefix": prefix}
+        all_rows.append(item)
+        models = _candidate_models(slug) if model else set()
+        if model and models and model in models:
+            matched.append(item)
+    return matched or all_rows
+
+
+_proxy_rr_cursor = 0
+
+
+def _ordered_backends(candidates: list[dict[str, str]], affinity: str) -> list[dict[str, str]]:
+    global _proxy_rr_cursor
+    if not candidates:
+        return []
+    if affinity:
+        digest = hashlib.sha256(affinity.encode("utf-8")).hexdigest()
+        start = int(digest, 16) % len(candidates)
+    else:
+        start = _proxy_rr_cursor % len(candidates)
+        _proxy_rr_cursor += 1
+    return candidates[start:] + candidates[:start]
+
+
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "host",
+    "content-length",
+    "authorization",
+    "cookie",
+}
+
+
+async def _close_upstream(resp: httpx.Response, client: httpx.AsyncClient) -> None:
+    await resp.aclose()
+    await client.aclose()
+
+
+async def _forward_unified_request(
+    request: Request,
+    backend: dict[str, str],
+    path: str,
+    body: bytes,
+) -> StreamingResponse:
+    upstream_path = f"/{backend['api_prefix']}/v1/{path.lstrip('/')}"
+    url = f"http://c2a-{backend['slug']}:5005{upstream_path}"
+    if request.url.query:
+        url += f"?{request.url.query}"
+
+    headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in HOP_BY_HOP_HEADERS
+    }
+    headers["Authorization"] = f"Bearer {backend['auth']}"
+    headers["X-Chat2API-Orchestrator"] = "1"
+    headers["X-Chat2API-Upstream-Slug"] = backend["slug"]
+
+    client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0))
+    req = client.build_request(
+        request.method,
+        url,
+        headers=headers,
+        content=body,
+    )
+    try:
+        resp = await client.send(req, stream=True)
+    except Exception:
+        await client.aclose()
+        raise
+
+    response_headers = {
+        k: v
+        for k, v in resp.headers.items()
+        if k.lower() not in HOP_BY_HOP_HEADERS
+        and k.lower() not in {"content-length", "content-encoding"}
+    }
+    response_headers["X-Chat2API-Upstream-Slug"] = backend["slug"]
+    return StreamingResponse(
+        resp.aiter_raw(),
+        status_code=resp.status_code,
+        headers=response_headers,
+        background=BackgroundTask(_close_upstream, resp, client),
+    )
+
+
 # ---------- 出口 IP 缓存 ----------
 
 _exit_ip_cache: dict[str, tuple[str, float]] = {}
@@ -435,6 +604,68 @@ async def healthz() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.get("/v1/models")
+async def unified_models(request: Request) -> JSONResponse:
+    require_unified_api_key(request)
+    model_ids: set[str] = set()
+    for row in read_accounts():
+        model_ids.update(_candidate_models(row["slug"]))
+    data = [
+        {
+            "id": mid,
+            "object": "model",
+            "created": 0,
+            "owned_by": "chat2api-orchestrator",
+        }
+        for mid in sorted(model_ids)
+    ]
+    audit("unified_models", request, True, model_count=len(data))
+    return JSONResponse({"object": "list", "data": data})
+
+
+@app.api_route(
+    "/v1/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def unified_proxy(path: str, request: Request) -> Response:
+    require_unified_api_key(request)
+    body = await request.body()
+    body_json = _extract_json_body(body, request.headers.get("content-type", ""))
+    model = str(body_json.get("model") or "").strip()
+    affinity = _affinity_key(request, body_json)
+    candidates = _backend_candidates(model)
+    if not candidates:
+        raise HTTPException(status_code=503, detail="暂无可用实例，请先在编排面板新增账号")
+
+    last_error = ""
+    for backend in _ordered_backends(candidates, affinity):
+        try:
+            resp = await _forward_unified_request(request, backend, path, body)
+            audit(
+                "unified_proxy",
+                request,
+                True,
+                slug=backend["slug"],
+                path=f"/v1/{path}",
+                model=model or "",
+                affinity=bool(affinity),
+            )
+            return resp
+        except httpx.RequestError as e:
+            last_error = str(e)[:200]
+            audit(
+                "unified_proxy",
+                request,
+                False,
+                slug=backend["slug"],
+                path=f"/v1/{path}",
+                model=model or "",
+                error=last_error,
+            )
+            continue
+    raise HTTPException(status_code=502, detail=f"所有实例转发失败：{last_error}")
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -584,6 +815,20 @@ class OrchestratorCredentialPatch(BaseModel):
 async def api_orchestrator_account() -> JSONResponse:
     creds = orch_credentials()
     return JSONResponse({"username": creds["username"]})
+
+
+@app.get("/api/unified", dependencies=[Depends(require_session), Depends(require_csrf)])
+async def api_unified_credentials(request: Request) -> JSONResponse:
+    key = unified_api_key()
+    if not key:
+        raise HTTPException(status_code=503, detail="统一 API Key 未生成，请重新 ./manage.sh apply")
+    audit("reveal_unified_api", request, True)
+    return JSONResponse({
+        "base_url": f"{public_origin(request)}/v1",
+        "chat_completions_url": f"{public_origin(request)}/v1/chat/completions",
+        "api_key": key,
+        "strategy": "无会话键时轮询；有 librechat_conversation_id / conversation_id / X-Chat2API-Affinity 时固定到同一容器",
+    })
 
 
 @app.patch(

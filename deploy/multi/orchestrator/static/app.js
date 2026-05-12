@@ -294,6 +294,35 @@ $('#btn-close-secret').addEventListener('click', () => {
     $('#secret-body').innerHTML = '';   // 立即清屏
 });
 
+// ---------- 统一 API ----------
+
+async function showUnifiedApi() {
+    if (!confirm('查看统一 API Key？\n该 Key 可调用所有实例，请勿泄露。')) return;
+    try {
+        const d = await api('GET', '/api/unified');
+        $('#unified-base-url').textContent = d.base_url;
+        $('#unified-api-key').textContent = d.api_key;
+        $('#unified-curl').textContent =
+`curl ${d.chat_completions_url} \\
+  -H "Authorization: Bearer ${d.api_key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"你好"}]}'`;
+        $('#unified-strategy').textContent = d.strategy || '';
+        $('#modal-unified-api').classList.remove('hidden');
+        $('#modal-unified-api').classList.add('flex');
+    } catch (e) {
+        toast('获取统一 API 失败：' + e.message, true);
+    }
+}
+
+$('#btn-unified-api').addEventListener('click', showUnifiedApi);
+$('#btn-close-unified-api').addEventListener('click', () => {
+    $('#modal-unified-api').classList.add('hidden');
+    $('#modal-unified-api').classList.remove('flex');
+    $('#unified-api-key').textContent = '';
+    $('#unified-curl').textContent = '';
+});
+
 // ---------- 管理中心 ----------
 
 async function openAdminCenter() {

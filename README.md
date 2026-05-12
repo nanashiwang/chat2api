@@ -175,6 +175,21 @@ chat2api migrate apply
 
 `accounts.csv` 仍然保留给批量导入/脚本化部署使用。
 
+### 统一调用入口
+
+多实例会额外暴露一个统一 OpenAI 兼容入口，由 Orchestrator 自动均衡到各个账号容器：
+
+```text
+Base URL: http://<vps>:60403/v1
+API Key:  编排面板右上角「统一 API」查看
+```
+
+路由策略：
+
+- 无会话键：轮询分配到不同容器
+- 有 `librechat_conversation_id` / `conversation_id` / `X-Chat2API-Affinity`：固定到同一容器
+- Orchestrator 会把统一 Key 转成目标容器自己的 `AUTHORIZATION`
+
 ### 已默认应用的工程加固（`deploy/multi/generate.py`）
 
 | 类别 | 项 | 默认 |
