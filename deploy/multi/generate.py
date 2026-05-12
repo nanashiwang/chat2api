@@ -355,6 +355,9 @@ NGINX_ORCH_LOCATION = """\
         # ---- unified OpenAI-compatible API (load-balanced by orchestrator) ----
         location /v1/ {
             proxy_pass http://c2a-orchestrator:8080/v1/;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection '';
         }
@@ -362,6 +365,9 @@ NGINX_ORCH_LOCATION = """\
         # ---- orchestrator (编排面板) ----
         location /orchestrator/ {
             proxy_pass http://c2a-orchestrator:8080/;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection 'upgrade';
         }

@@ -300,10 +300,12 @@ async function showUnifiedApi() {
     if (!confirm('查看统一 API Key？\n该 Key 可调用所有实例，请勿泄露。')) return;
     try {
         const d = await api('GET', '/api/unified');
-        $('#unified-base-url').textContent = d.base_url;
+        const baseUrl = location.origin + (d.base_path || '/v1');
+        const chatUrl = location.origin + (d.chat_completions_path || '/v1/chat/completions');
+        $('#unified-base-url').textContent = baseUrl;
         $('#unified-api-key').textContent = d.api_key;
         $('#unified-curl').textContent =
-`curl ${d.chat_completions_url} \\
+`curl ${chatUrl} \\
   -H "Authorization: Bearer ${d.api_key}" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"你好"}]}'`;

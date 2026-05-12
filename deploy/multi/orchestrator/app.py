@@ -259,9 +259,26 @@ def mask_secret(s: str, head: int = 6, tail: int = 4) -> str:
 
 
 def public_origin(request: Request) -> str:
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or "localhost"
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",", 1)[0].strip()
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or ""
+    ).split(",", 1)[0].strip()
+    bare_host = host
+    if bare_host.startswith("[") and "]" in bare_host:
+        bare_host = bare_host[1:bare_host.index("]")]
+    elif ":" in bare_host:
+        bare_host = bare_host.rsplit(":", 1)[0]
+    if not host or bare_host in {"localhost", "127.0.0.1", "0.0.0.0"} or bare_host.startswith("c2a-"):
+        return ""
     return f"{proto}://{host}"
+
+
+def public_url(request: Request, path: str) -> str:
+    clean_path = "/" + path.lstrip("/")
+    origin = public_origin(request).rstrip("/")
+    return f"{origin}{clean_path}" if origin else clean_path
 
 
 def unified_api_key() -> str:
@@ -822,10 +839,14 @@ async def api_unified_credentials(request: Request) -> JSONResponse:
     key = unified_api_key()
     if not key:
         raise HTTPException(status_code=503, detail="统一 API Key 未生成，请重新 ./manage.sh apply")
+    base_path = "/v1"
+    chat_path = "/v1/chat/completions"
     audit("reveal_unified_api", request, True)
     return JSONResponse({
-        "base_url": f"{public_origin(request)}/v1",
-        "chat_completions_url": f"{public_origin(request)}/v1/chat/completions",
+        "base_path": base_path,
+        "chat_completions_path": chat_path,
+        "base_url": public_url(request, base_path),
+        "chat_completions_url": public_url(request, chat_path),
         "api_key": key,
         "strategy": "无会话键时轮询；有 librechat_conversation_id / conversation_id / X-Chat2API-Affinity 时固定到同一容器",
     })
