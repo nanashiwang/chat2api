@@ -128,17 +128,17 @@ function instanceInitial(it) {
 
 function statusPill(it) {
     if (isHealthy(it)) {
-        return '<span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700"><span class="status-dot bg-emerald-500"></span>Healthy</span>';
+        return '<span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700"><span class="status-dot bg-emerald-500"></span>Healthy</span>';
     }
     if (it.state === 'running') {
-        return `<span class="inline-flex items-center gap-1.5 rounded-full bg-orange-50 px-2.5 py-1 text-xs font-bold text-orange-700"><span class="status-dot bg-orange-500"></span>${escapeHtml(it.health || 'running')}</span>`;
+        return `<span class="inline-flex items-center gap-1.5 rounded-full bg-orange-50 px-2.5 py-1 text-xs font-semibold text-orange-700"><span class="status-dot bg-orange-500"></span>${escapeHtml(it.health || 'running')}</span>`;
     }
-    return `<span class="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600"><span class="status-dot bg-slate-400"></span>${escapeHtml(it.state || 'absent')}</span>`;
+    return `<span class="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600"><span class="status-dot bg-slate-400"></span>${escapeHtml(it.state || 'absent')}</span>`;
 }
 
 function planPill(it) {
     const label = it.plan_label || it.plan_type || '未知';
-    return `<span class="inline-flex rounded-lg border border-blue-100 bg-blue-50 px-2 py-1 text-xs font-bold text-blue-700">${escapeHtml(label)}</span>`;
+    return `<span class="inline-flex rounded-lg border border-blue-100 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">${escapeHtml(label)}</span>`;
 }
 
 function getFilteredInstances() {
@@ -192,9 +192,9 @@ function renderDetail(it) {
     body.classList.remove('hidden');
     body.innerHTML = `
         <div class="flex items-start gap-3">
-            <div class="grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 text-lg font-black text-white">${escapeHtml(instanceInitial(it))}</div>
+            <div class="grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 text-lg font-semibold text-white">${escapeHtml(instanceInitial(it))}</div>
             <div class="min-w-0">
-                <div class="truncate text-base font-black text-slate-950">${escapeHtml(it.note || it.slug)}</div>
+                <div class="orch-detail-title truncate text-base">${escapeHtml(it.note || it.slug)}</div>
                 <div class="mt-1 font-mono text-xs text-slate-400">${escapeHtml(it.slug)}</div>
             </div>
         </div>
@@ -205,12 +205,12 @@ function renderDetail(it) {
                 <div class="mt-1 break-all font-mono text-xs text-slate-600">${escapeHtml(it.proxy_masked || '未绑定')}</div>
             </div>
             <div class="grid grid-cols-2 gap-3">
-                <div class="rounded-2xl bg-slate-50 p-3"><div class="text-xs font-semibold text-slate-400">出口 IP</div><div class="mt-1 font-bold text-slate-800">${escapeHtml(it.exit_ip || '?')}</div></div>
-                <div class="rounded-2xl bg-slate-50 p-3"><div class="text-xs font-semibold text-slate-400">运行时长</div><div class="mt-1 font-bold text-slate-800">${fmtUptime(it.uptime_seconds)}</div></div>
+                <div class="rounded-2xl bg-slate-50 p-3"><div class="text-xs font-semibold text-slate-400">出口 IP</div><div class="orch-label-strong mt-1 text-slate-800">${escapeHtml(it.exit_ip || '?')}</div></div>
+                <div class="rounded-2xl bg-slate-50 p-3"><div class="text-xs font-semibold text-slate-400">运行时长</div><div class="orch-label-strong mt-1 text-slate-800">${fmtUptime(it.uptime_seconds)}</div></div>
             </div>
             <div class="rounded-2xl bg-slate-50 p-3">
                 <div class="text-xs font-semibold text-slate-400">Cookie 鲜度</div>
-                <div class="mt-1 text-sm font-bold">${fmtCookieAge(it.cookie_last_success_at)}</div>
+                <div class="orch-label-strong mt-1 text-sm">${fmtCookieAge(it.cookie_last_success_at)}</div>
             </div>
             <div class="rounded-2xl bg-slate-50 p-3">
                 <div class="text-xs font-semibold text-slate-400">可用模型</div>
@@ -258,8 +258,8 @@ function renderRows(instances, updateDetail = true) {
         <tr class="instance-row cursor-pointer border-t border-slate-100 ${selected ? 'bg-blue-50/70' : 'bg-white'}" data-slug="${escapeHtml(it.slug)}">
             <td class="py-4 pl-4 pr-3">
                 <div class="flex items-center gap-3">
-                    <div class="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 text-sm font-black text-white shadow-sm">${escapeHtml(instanceInitial(it))}</div>
-                    <div class="min-w-0"><div class="truncate font-semibold text-slate-950">${escapeHtml(it.note || it.slug)}</div><div class="mt-1 font-mono text-xs text-slate-400">${escapeHtml(it.slug)}</div></div>
+                    <div class="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 text-sm font-semibold text-white shadow-sm">${escapeHtml(instanceInitial(it))}</div>
+                    <div class="min-w-0"><div class="truncate orch-label-strong text-slate-950">${escapeHtml(it.note || it.slug)}</div><div class="mt-1 font-mono text-xs text-slate-400">${escapeHtml(it.slug)}</div></div>
                 </div>
             </td>
             <td class="px-3 py-4"><div class="flex flex-wrap items-center gap-2">${planPill(it)}</div>${renderInlineModels(it.models, 3)}</td>
