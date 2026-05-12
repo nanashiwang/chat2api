@@ -5,6 +5,99 @@
     <meta content="width=device-width, initial-scale=1.0" name="viewport">
     <title>Chat2API Admin</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --panel: rgba(255, 255, 255, 0.88);
+            --line: #e6edf7;
+            --ink: #0f172a;
+            --muted: #64748b;
+            --brand: #2563eb;
+            --ok: #16a34a;
+            --warn: #f97316;
+            --danger: #ef4444;
+        }
+        body {
+            background:
+                radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 34rem),
+                linear-gradient(135deg, #f8fbff 0%, #eef4fb 48%, #f8fafc 100%);
+            font-family: ui-rounded, "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        }
+        .glass-panel {
+            background: var(--panel);
+            border: 1px solid rgba(226, 232, 240, 0.88);
+            box-shadow: 0 18px 55px rgba(15, 23, 42, 0.07);
+            backdrop-filter: blur(18px);
+        }
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            width: 100%;
+            border-radius: 1rem;
+            padding: 0.78rem 0.9rem;
+            color: #526179;
+            transition: 160ms ease;
+        }
+        .nav-item:hover {
+            background: #f1f5f9;
+            color: var(--brand);
+        }
+        .nav-item-active {
+            background: linear-gradient(90deg, #eaf2ff, #f8fbff);
+            color: var(--brand);
+            box-shadow: inset 3px 0 0 var(--brand);
+            font-weight: 700;
+        }
+        .metric-card {
+            background: linear-gradient(145deg, #ffffff, #f8fbff);
+            border: 1px solid var(--line);
+            border-radius: 1.25rem;
+            box-shadow: 0 12px 36px rgba(15, 23, 42, 0.06);
+        }
+        .admin-table th {
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+        .admin-table tbody tr {
+            transition: 140ms ease;
+        }
+        .admin-table tbody tr:hover {
+            background: #f8fbff;
+        }
+        .status-dot {
+            display: inline-block;
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 999px;
+        }
+        @media (max-width: 1023px) {
+            .admin-shell {
+                display: block;
+            }
+            .sidebar {
+                position: sticky;
+                top: 0;
+                z-index: 40;
+                width: 100%;
+                min-height: 0;
+                border-right: 0;
+                border-bottom: 1px solid var(--line);
+            }
+            .side-nav {
+                display: grid;
+                grid-auto-flow: column;
+                grid-auto-columns: max-content;
+                overflow-x: auto;
+                padding-bottom: 0.25rem;
+            }
+            .nav-item {
+                white-space: nowrap;
+            }
+        }
+    </style>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const apiPrefix = "{{ api_prefix }}";
@@ -34,6 +127,14 @@
             const rulesTable = document.getElementById('rulesTable');
             const alertsList = document.getElementById('alertsList');
             const updatedAt = document.getElementById('updatedAt');
+            const serverClock = document.getElementById('serverClock');
+            const globalSearchInput = document.getElementById('globalSearchInput');
+            const topRefreshButton = document.getElementById('topRefreshButton');
+            const accountDetailPanel = document.getElementById('accountDetailPanel');
+            const accountDetailBody = document.getElementById('accountDetailBody');
+            const accountDetailEmpty = document.getElementById('accountDetailEmpty');
+            const accountDetailClose = document.getElementById('accountDetailClose');
+            const accountTableCount = document.getElementById('accountTableCount');
             const proxyInput = document.getElementById('proxyInput');
             const groupSizeInput = document.getElementById('groupSizeInput');
             const saveButton = document.getElementById('saveButton');
@@ -127,6 +228,8 @@
             const harvCookieSubmit = document.getElementById('harvCookieSubmit');
             let proxyOptions = [];
             let accountsCache = [];
+            let selectedAccountToken = '';
+            let accountSearchQuery = '';
             let editingToken = '';
             let importMode = 'text';           // 'text' | 'file'
             let parsedFileResult = null;       // 文件解析结果缓存
@@ -150,77 +253,234 @@
                     .filter(item => item.proxy_url);
             }
 
-            function renderSummary(summary) {
+            function renderSummary(summary, accounts = accountsCache) {
+                summary = summary || {};
+                const total = Number(summary.accounts_total || 0);
+                const bound = Number(summary.bound_total || 0);
+                const refreshTotal = accounts.filter((item) => item.token_type === 'RefreshToken').length;
+                const refreshReady = accounts.filter((item) =>
+                    item.token_type === 'RefreshToken' && item.refresh_status === '已刷新'
+                ).length;
                 const cards = [
-                    ['账号总数', summary.accounts_total],
-                    ['可用账号', summary.accounts_ok],
-                    ['异常账号', summary.accounts_bad],
-                    ['IP 总数', summary.proxy_total],
-                    ['分组总数', summary.group_total],
-                    ['已绑定账号', summary.bound_total],
+                    ['账号总数', total, '较昨日 0', '▣', 'bg-blue-50 text-blue-600'],
+                    ['可用账号', Number(summary.accounts_ok || 0), '健康运行', '✓', 'bg-emerald-50 text-emerald-600'],
+                    ['异常账号', Number(summary.accounts_bad || 0), summary.accounts_bad ? '需要处理' : '无异常', '!', 'bg-orange-50 text-orange-600'],
+                    ['代理数', Number(summary.proxy_total || 0), '出口配置', '↗', 'bg-indigo-50 text-indigo-600'],
+                    ['已绑定', bound, `覆盖 ${total ? Math.round((bound / total) * 100) : 0}%`, '∞', 'bg-cyan-50 text-cyan-600'],
+                    ['RefreshToken', `${refreshReady}/${refreshTotal}`, refreshTotal ? '已刷新 / 总数' : '暂无 RT', '⟳', 'bg-slate-100 text-slate-600'],
                 ];
-                summaryGrid.innerHTML = cards.map(([label, value]) => `
-                    <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-4">
-                        <div class="text-sm text-slate-500">${label}</div>
-                        <div class="text-2xl font-bold mt-2">${value}</div>
+                summaryGrid.innerHTML = cards.map(([label, value, hint, icon, tone]) => `
+                    <div class="metric-card p-4 min-h-28">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <div class="text-sm font-medium text-slate-500">${label}</div>
+                                <div class="mt-2 text-2xl font-black tracking-tight text-slate-950">${value}</div>
+                                <div class="mt-2 text-xs text-slate-500">${hint}</div>
+                            </div>
+                            <div class="grid h-11 w-11 place-items-center rounded-2xl ${tone} text-lg font-bold">${icon}</div>
+                        </div>
                     </div>
                 `).join('');
             }
 
             function renderIpCards(cards) {
+                if (!cards.length) {
+                    ipGrid.innerHTML = `<div class="rounded-3xl border border-dashed border-slate-300 bg-white/70 p-8 text-center text-sm text-slate-500">暂无代理，前往“代理与路由”配置当前实例出口。</div>`;
+                    return;
+                }
                 ipGrid.innerHTML = cards.map((ip) => `
-                    <div class="border border-slate-200 rounded-3xl p-4 bg-white">
-                        <div class="flex items-center justify-between mb-3">
-                            <div class="font-semibold text-lg">${ip.name}</div>
-                            <span class="text-xs px-2 py-1 rounded-full ${ip.bad ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}">${ip.bad ? '需关注' : '在线'}</span>
+                    <div class="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div class="mb-3 flex items-center justify-between gap-3">
+                            <div class="font-semibold text-slate-950">${escapeHtml(ip.name)}</div>
+                            <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ${ip.bad ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}">
+                                <span class="status-dot ${ip.bad ? 'bg-amber-500' : 'bg-emerald-500'}"></span>${ip.bad ? '需关注' : '在线'}
+                            </span>
                         </div>
-                        <div class="text-sm text-slate-500 break-all">${ip.proxy_url}</div>
-                        <div class="grid grid-cols-2 gap-3 mt-4 text-sm">
-                            <div class="bg-slate-50 rounded-2xl p-3">绑定账号<br><span class="text-xl font-bold">${ip.accounts}</span></div>
-                            <div class="bg-slate-50 rounded-2xl p-3">所属分组<br><span class="text-xl font-bold">${ip.group}</span></div>
-                            <div class="bg-slate-50 rounded-2xl p-3">正常账号<br><span class="text-xl font-bold">${ip.ok}</span></div>
-                            <div class="bg-slate-50 rounded-2xl p-3">异常账号<br><span class="text-xl font-bold">${ip.bad}</span></div>
+                        <div class="break-all rounded-2xl bg-slate-50 p-3 font-mono text-xs text-slate-500">${escapeHtml(ip.proxy_url)}</div>
+                        <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
+                            <div class="rounded-2xl bg-slate-50 p-3">绑定账号<br><span class="text-xl font-bold text-slate-950">${ip.accounts}</span></div>
+                            <div class="rounded-2xl bg-slate-50 p-3">所属分组<br><span class="text-xl font-bold text-slate-950">${escapeHtml(ip.group)}</span></div>
+                            <div class="rounded-2xl bg-emerald-50 p-3 text-emerald-700">正常账号<br><span class="text-xl font-bold">${ip.ok}</span></div>
+                            <div class="rounded-2xl bg-orange-50 p-3 text-orange-700">异常账号<br><span class="text-xl font-bold">${ip.bad}</span></div>
                         </div>
                     </div>
                 `).join('');
             }
 
+            function maskTokenDisplay(token) {
+                const value = String(token || '');
+                if (value.length <= 18) return value || '-';
+                return `${value.slice(0, 8)}...${value.slice(-6)}`;
+            }
+
+            function accountInitial(row) {
+                const source = (row.note || row.id || row.token || 'A').trim();
+                return source.slice(0, 1).toUpperCase();
+            }
+
+            function tokenTypeChip(type) {
+                const cls = type === 'RefreshToken'
+                    ? 'bg-blue-50 text-blue-700 border-blue-100'
+                    : type === 'AccessToken'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                        : 'bg-slate-50 text-slate-600 border-slate-200';
+                return `<span class="inline-flex items-center rounded-lg border px-2 py-1 text-xs font-semibold ${cls}">${escapeHtml(type || '-')}</span>`;
+            }
+
+            function statusChip(status) {
+                const ok = status === '正常';
+                return `
+                    <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${ok ? 'bg-emerald-50 text-emerald-700' : 'bg-orange-50 text-orange-700'}">
+                        <span class="status-dot ${ok ? 'bg-emerald-500' : 'bg-orange-500'}"></span>${ok ? 'Healthy' : 'Degraded'}
+                    </span>
+                `;
+            }
+
+            function getFilteredAccounts() {
+                const q = accountSearchQuery.trim().toLowerCase();
+                if (!q) return accountsCache;
+                return accountsCache.filter((row) => [
+                    row.id,
+                    row.token,
+                    row.token_masked,
+                    row.note,
+                    row.proxy_name,
+                    row.proxy_url,
+                    row.status,
+                    row.token_type,
+                    row.group,
+                    row.refresh_status,
+                ].some((value) => String(value || '').toLowerCase().includes(q)));
+            }
+
             function renderAccounts(accounts) {
                 accountsCache = accounts;
-                accountsTable.innerHTML = accounts.map((row) => `
-                    <tr class="border-b border-slate-100">
-                        <td class="py-4 font-medium">${row.id}</td>
-                        <td class="py-4 font-mono text-xs break-all select-all">${row.token}</td>
-                        <td class="py-4 text-slate-600">${row.note || '-'}</td>
-                        <td class="py-4">
-                            <span class="px-2 py-1 rounded-full text-xs ${row.token_type === 'RefreshToken' ? 'bg-blue-100 text-blue-700' : row.token_type === 'AccessToken' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700'}">${row.token_type}</span>
-                        </td>
-                        <td class="py-4">${row.status}</td>
-                        <td class="py-4">
-                            <select class="account-proxy-select px-3 py-2 rounded-xl border border-slate-200 text-sm" data-token="${row.token}">
-                                <option value="" ${!row.proxy_url ? 'selected' : ''}>未绑定</option>
-                                ${proxyOptions.map((proxy) => `
-                                    <option value="${proxy.proxy_url}" ${proxy.proxy_url === row.proxy_url ? 'selected' : ''}>${proxy.name}</option>
-                                `).join('')}
-                            </select>
-                        </td>
-                        <td class="py-4">${row.group}</td>
-                        <td class="py-4 text-slate-500">${row.updated_at || '-'}</td>
-                        <td class="py-4">
-                            <div class="text-sm">${row.refresh_status || '-'}</div>
-                            <div class="text-xs text-slate-500">${row.refresh_updated_at || '-'}</div>
-                            ${row.refresh_error ? `<div class="text-xs text-red-600 mt-1 max-w-60 truncate" title="${row.refresh_error}">${row.refresh_error}</div>` : ''}
-                        </td>
-                        <td class="py-4">
-                            <div class="flex gap-2">
-                                <button class="bind-account-button px-3 py-2 rounded-xl bg-slate-900 text-white text-xs" data-token="${row.token}">保存</button>
-                                <button class="edit-account-button px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs" data-token="${row.token}">编辑</button>
-                                ${row.can_refresh ? `<button class="refresh-account-button px-3 py-2 rounded-xl bg-blue-50 text-blue-700 border border-blue-200 text-xs" data-token="${row.token}">立即刷新</button>` : ''}
-                                <button class="delete-account-button px-3 py-2 rounded-xl bg-red-50 text-red-700 border border-red-200 text-xs" data-token="${row.token}">删除</button>
+                if (selectedAccountToken && !accountsCache.some((row) => row.token === selectedAccountToken)) {
+                    selectedAccountToken = '';
+                }
+                if (!selectedAccountToken && accountsCache.length) {
+                    selectedAccountToken = accountsCache[0].token;
+                }
+                renderAccountsTable(getFilteredAccounts());
+                renderAccountDetail(accountsCache.find((row) => row.token === selectedAccountToken));
+            }
+
+            function renderAccountsTable(accounts) {
+                if (accountTableCount) {
+                    accountTableCount.textContent = `${accounts.length} / ${accountsCache.length} 个账号`;
+                }
+                if (!accounts.length) {
+                    accountsTable.innerHTML = `<tr><td colspan="6" class="py-14 text-center text-slate-400">暂无匹配账号，清空搜索或新增账号。</td></tr>`;
+                    return;
+                }
+                accountsTable.innerHTML = accounts.map((row) => {
+                    const selected = row.token === selectedAccountToken;
+                    return `
+                        <tr class="account-row cursor-pointer border-b border-slate-100 ${selected ? 'bg-blue-50/70' : 'bg-white'}" data-token="${escapeHtml(row.token)}">
+                            <td class="py-4 pl-4 pr-3">
+                                <div class="flex items-center gap-3">
+                                    <div class="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 text-sm font-black text-white shadow-sm">${escapeHtml(accountInitial(row))}</div>
+                                    <div class="min-w-0">
+                                        <div class="truncate font-semibold text-slate-950">${escapeHtml(row.note || row.id)}</div>
+                                        <div class="mt-1 font-mono text-xs text-slate-400">${escapeHtml(maskTokenDisplay(row.token_masked || row.token))}</div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="px-3 py-4">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    ${tokenTypeChip(row.token_type)}
+                                    <span class="rounded-lg bg-slate-50 px-2 py-1 text-xs text-slate-500">${escapeHtml(row.group || '-')}</span>
+                                </div>
+                            </td>
+                            <td class="px-3 py-4">
+                                <select class="account-proxy-select max-w-56 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 shadow-sm" data-token="${escapeHtml(row.token)}">
+                                    <option value="" ${!row.proxy_url ? 'selected' : ''}>未绑定</option>
+                                    ${proxyOptions.map((proxy) => `
+                                        <option value="${escapeHtml(proxy.proxy_url)}" ${proxy.proxy_url === row.proxy_url ? 'selected' : ''}>${escapeHtml(proxy.name)}</option>
+                                    `).join('')}
+                                </select>
+                                <div class="mt-1 max-w-56 truncate text-xs text-slate-400">${escapeHtml(row.proxy_name || '-')}</div>
+                            </td>
+                            <td class="px-3 py-4">${statusChip(row.status)}</td>
+                            <td class="px-3 py-4">
+                                <div class="text-sm font-medium text-slate-700">${escapeHtml(row.refresh_status || '-')}</div>
+                                <div class="mt-1 text-xs text-slate-400">${escapeHtml(row.refresh_updated_at || row.updated_at || '-')}</div>
+                            </td>
+                            <td class="py-4 pl-3 pr-4">
+                                <div class="flex flex-wrap justify-end gap-2">
+                                    <button class="bind-account-button rounded-xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white shadow-sm" data-token="${escapeHtml(row.token)}">保存</button>
+                                    <button class="edit-account-button rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700" data-token="${escapeHtml(row.token)}">编辑</button>
+                                    ${row.can_refresh ? `<button class="refresh-account-button rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700" data-token="${escapeHtml(row.token)}">刷新</button>` : ''}
+                                    <button class="delete-account-button rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600" data-token="${escapeHtml(row.token)}">删除</button>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            function renderAccountDetail(account) {
+                if (!accountDetailPanel || !accountDetailBody || !accountDetailEmpty) return;
+                if (!account) {
+                    accountDetailEmpty.classList.remove('hidden');
+                    accountDetailBody.classList.add('hidden');
+                    accountDetailBody.innerHTML = '';
+                    return;
+                }
+                accountDetailEmpty.classList.add('hidden');
+                accountDetailBody.classList.remove('hidden');
+                const errorBlock = account.refresh_error
+                    ? `<div class="rounded-2xl border border-red-100 bg-red-50 p-3 text-xs text-red-700">${escapeHtml(account.refresh_error)}</div>`
+                    : `<div class="rounded-2xl border border-emerald-100 bg-emerald-50 p-3 text-xs text-emerald-700">最近 1 小时暂无错误记录</div>`;
+                accountDetailBody.innerHTML = `
+                    <div class="flex items-start gap-3">
+                        <div class="grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-emerald-400 to-blue-500 text-lg font-black text-white">${escapeHtml(accountInitial(account))}</div>
+                        <div class="min-w-0">
+                            <div class="truncate text-base font-black text-slate-950">${escapeHtml(account.note || account.id)}</div>
+                            <div class="mt-1 font-mono text-xs text-slate-400">${escapeHtml(maskTokenDisplay(account.token_masked || account.token))}</div>
+                        </div>
+                    </div>
+
+                    <div class="mt-5 flex flex-wrap gap-2">
+                        ${statusChip(account.status)}
+                        ${tokenTypeChip(account.token_type)}
+                    </div>
+
+                    <div class="mt-5 space-y-3 text-sm">
+                        <div class="rounded-2xl bg-slate-50 p-3">
+                            <div class="text-xs font-semibold text-slate-400">代理</div>
+                            <div class="mt-1 font-medium text-slate-800">${escapeHtml(account.proxy_name || '-')}</div>
+                            <div class="mt-1 break-all font-mono text-xs text-slate-400">${escapeHtml(account.proxy_url || '未绑定')}</div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div class="rounded-2xl bg-slate-50 p-3">
+                                <div class="text-xs font-semibold text-slate-400">刷新状态</div>
+                                <div class="mt-1 font-bold text-slate-800">${escapeHtml(account.refresh_status || '-')}</div>
                             </div>
-                        </td>
-                    </tr>
-                `).join('');
+                            <div class="rounded-2xl bg-slate-50 p-3">
+                                <div class="text-xs font-semibold text-slate-400">最近刷新</div>
+                                <div class="mt-1 font-bold text-slate-800">${escapeHtml(account.refresh_updated_at || '-')}</div>
+                            </div>
+                        </div>
+                        <div class="rounded-2xl bg-slate-50 p-3">
+                            <div class="text-xs font-semibold text-slate-400">完整 Token</div>
+                            <div class="mt-1 break-all font-mono text-xs text-slate-500 select-all">${escapeHtml(account.token)}</div>
+                        </div>
+                        ${errorBlock}
+                    </div>
+
+                    <div class="mt-5 grid grid-cols-2 gap-2">
+                        <button class="edit-account-button rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700" data-token="${escapeHtml(account.token)}">编辑</button>
+                        ${account.can_refresh ? `<button class="refresh-account-button rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white" data-token="${escapeHtml(account.token)}">立即刷新</button>` : '<span></span>'}
+                        <button class="delete-account-button col-span-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-red-600" data-token="${escapeHtml(account.token)}">删除账号</button>
+                    </div>
+                `;
+            }
+
+            function selectAccount(token) {
+                selectedAccountToken = token || '';
+                renderAccountsTable(getFilteredAccounts());
+                renderAccountDetail(accountsCache.find((row) => row.token === selectedAccountToken));
             }
 
             function renderRules(rules) {
@@ -236,9 +496,14 @@
             }
 
             function renderAlerts(alerts) {
-                alertsList.innerHTML = alerts.map((item) => `
-                    <div class="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm">${item}</div>
-                `).join('');
+                alertsList.innerHTML = alerts.map((item) => {
+                    const ok = String(item).includes('未发现异常');
+                    return `
+                    <div class="rounded-2xl border ${ok ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-orange-100 bg-orange-50 text-orange-700'} p-4 text-sm">
+                        ${escapeHtml(item)}
+                    </div>
+                `;
+                }).join('');
             }
 
             function buildTestCommands(payload) {
@@ -487,15 +752,49 @@
                 const response = await fetch(dataApi);
                 const payload = await response.json();
                 proxyOptions = payload.proxy_options || [];
-                renderSummary(payload.summary);
+                const accounts = payload.accounts || [];
+                renderSummary(payload.summary, accounts);
                 renderIpCards(payload.ip_cards || []);
-                renderAccounts(payload.accounts || []);
+                renderAccounts(accounts);
                 renderRules(payload.rules || []);
                 renderAlerts(payload.alerts || []);
                 fillProxyInput(payload.routing_config || {});
                 fillAccountProxySelect();
                 buildTestCommands(payload);
                 updatedAt.textContent = payload.updated_at || '尚未发布';
+            }
+
+            function updateServerClock() {
+                if (!serverClock) return;
+                serverClock.textContent = new Date().toLocaleString('zh-CN', { hour12: false });
+            }
+
+            updateServerClock();
+            window.setInterval(updateServerClock, 1000);
+
+            if (globalSearchInput) {
+                globalSearchInput.addEventListener('input', () => {
+                    accountSearchQuery = globalSearchInput.value || '';
+                    renderAccountsTable(getFilteredAccounts());
+                    if (accountSearchQuery.trim()) {
+                        activatePage('accounts-page');
+                    }
+                });
+            }
+
+            if (topRefreshButton) {
+                topRefreshButton.addEventListener('click', async () => {
+                    topRefreshButton.disabled = true;
+                    setStatus('正在刷新数据...');
+                    try {
+                        await loadDashboard();
+                        setStatus('数据已刷新');
+                    } catch (error) {
+                        setStatus(`刷新失败: ${error.message}`);
+                    } finally {
+                        topRefreshButton.disabled = false;
+                    }
+                });
             }
 
             saveButton.addEventListener('click', async () => {
@@ -523,80 +822,116 @@
                 await loadDashboard();
             });
 
+            function setStatus(message) {
+                if (statusText) {
+                    statusText.textContent = message || '就绪';
+                }
+            }
+
+            function findAccountProxySelect(token) {
+                return Array.from(accountsTable.querySelectorAll('.account-proxy-select'))
+                    .find((select) => select.dataset.token === token);
+            }
+
+            async function bindAccountToken(token) {
+                const select = findAccountProxySelect(token);
+                if (!select) {
+                    setStatus('未找到当前行的代理选择器');
+                    return;
+                }
+                const proxyUrl = select.value;
+                if (!proxyUrl) {
+                    setStatus('如需解除绑定或修改备注，请点“编辑”后保存');
+                    return;
+                }
+                const proxy = proxyOptions.find((item) => item.proxy_url === proxyUrl);
+                const response = await fetch(bindApi, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token,
+                        proxy_url: proxyUrl,
+                        proxy_name: proxy ? proxy.name : 'Custom Proxy',
+                    }),
+                });
+                const result = await response.json();
+                setStatus(response.ok ? '账号绑定已更新' : (result.detail || '更新失败'));
+                if (response.ok) {
+                    selectedAccountToken = token;
+                    await loadDashboard();
+                }
+            }
+
+            async function refreshAccountToken(token, trigger = null) {
+                if (trigger) trigger.disabled = true;
+                setStatus('正在刷新账号...');
+                const response = await fetch(refreshAccountApi, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token }),
+                });
+                const result = await response.json();
+                if (trigger) trigger.disabled = false;
+                setStatus(response.ok ? result.message : (result.detail || '刷新失败'));
+                if (response.ok) {
+                    selectedAccountToken = token;
+                    await loadDashboard();
+                }
+            }
+
+            async function deleteAccountToken(token) {
+                if (!window.confirm('确认删除该账号吗？这会同时移除固定绑定配置。')) {
+                    return;
+                }
+                const response = await fetch(deleteAccountApi, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token }),
+                });
+                const result = await response.json();
+                setStatus(response.ok ? result.message : (result.detail || '删除失败'));
+                if (response.ok) {
+                    selectedAccountToken = '';
+                    await loadDashboard();
+                }
+            }
+
+            function editAccountToken(token) {
+                const account = accountsCache.find((item) => item.token === token);
+                openAccountModal('edit', account || null);
+            }
+
             accountsTable.addEventListener('click', async (event) => {
                 const button = event.target.closest('.bind-account-button');
                 const editButton = event.target.closest('.edit-account-button');
                 const refreshButton = event.target.closest('.refresh-account-button');
                 const deleteButton = event.target.closest('.delete-account-button');
 
-                if (button) {
-                    const token = button.dataset.token;
-                    const select = accountsTable.querySelector(`.account-proxy-select[data-token="${token}"]`);
-                    const proxyUrl = select.value;
-                    if (!proxyUrl) {
-                        statusText.textContent = '如需解除绑定或修改备注，请点“编辑”后保存';
-                        return;
-                    }
-                    const proxy = proxyOptions.find((item) => item.proxy_url === proxyUrl);
-                    const response = await fetch(bindApi, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            token,
-                            proxy_url: proxyUrl,
-                            proxy_name: proxy ? proxy.name : 'Custom Proxy',
-                        }),
-                    });
-                    const result = await response.json();
-                    statusText.textContent = response.ok ? '账号绑定已更新' : (result.detail || '更新失败');
-                    if (response.ok) {
-                        await loadDashboard();
-                    }
-                    return;
-                }
+                if (button) return bindAccountToken(button.dataset.token);
+                if (editButton) return editAccountToken(editButton.dataset.token);
+                if (refreshButton) return refreshAccountToken(refreshButton.dataset.token, refreshButton);
+                if (deleteButton) return deleteAccountToken(deleteButton.dataset.token);
 
-                if (editButton) {
-                    const token = editButton.dataset.token;
-                    const account = accountsCache.find((item) => item.token === token);
-                    openAccountModal('edit', account || null);
-                    return;
-                }
-
-                if (refreshButton) {
-                    const token = refreshButton.dataset.token;
-                    refreshButton.disabled = true;
-                    statusText.textContent = '正在刷新账号...';
-                    const response = await fetch(refreshAccountApi, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ token }),
-                    });
-                    const result = await response.json();
-                    refreshButton.disabled = false;
-                    statusText.textContent = response.ok ? result.message : (result.detail || '刷新失败');
-                    if (response.ok) {
-                        await loadDashboard();
-                    }
-                    return;
-                }
-
-                if (deleteButton) {
-                    const token = deleteButton.dataset.token;
-                    if (!window.confirm('确认删除该账号吗？这会同时移除固定绑定配置。')) {
-                        return;
-                    }
-                    const response = await fetch(deleteAccountApi, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ token }),
-                    });
-                    const result = await response.json();
-                    statusText.textContent = response.ok ? result.message : (result.detail || '删除失败');
-                    if (response.ok) {
-                        await loadDashboard();
-                    }
+                const row = event.target.closest('.account-row');
+                if (row && !event.target.closest('select, input, button, a')) {
+                    selectAccount(row.dataset.token);
                 }
             });
+
+            if (accountDetailPanel) {
+                accountDetailPanel.addEventListener('click', async (event) => {
+                    const editButton = event.target.closest('.edit-account-button');
+                    const refreshButton = event.target.closest('.refresh-account-button');
+                    const deleteButton = event.target.closest('.delete-account-button');
+                    if (editButton) return editAccountToken(editButton.dataset.token);
+                    if (refreshButton) return refreshAccountToken(refreshButton.dataset.token, refreshButton);
+                    if (deleteButton) return deleteAccountToken(deleteButton.dataset.token);
+                });
+            }
+
+            if (accountDetailClose) {
+                accountDetailClose.addEventListener('click', () => selectAccount(''));
+            }
 
             logoutButton.addEventListener('click', async () => {
                 const form = document.createElement('form');
@@ -1273,11 +1608,8 @@
                 });
                 pageLinks.forEach((link) => {
                     const active = link.dataset.pageTarget === pageId;
-                    link.classList.toggle('bg-slate-800', active);
-                    link.classList.toggle('border-slate-700', !active);
-                    link.classList.toggle('bg-slate-900/60', !active);
-                    link.classList.toggle('text-white', active);
-                    link.classList.toggle('text-slate-300', !active);
+                    link.classList.toggle('nav-item-active', active);
+                    link.setAttribute('aria-current', active ? 'page' : 'false');
                 });
                 if (window.location.hash !== `#${pageId}`) {
                     history.replaceState(null, '', `#${pageId}`);
@@ -1310,7 +1642,7 @@
                 });
             });
 
-            const initialPage = adminPages.find((page) => `#${page.id}` === window.location.hash)?.id || 'overview-page';
+            const initialPage = adminPages.find((page) => `#${page.id}` === window.location.hash)?.id || 'accounts-page';
             activatePage(initialPage);
             activateRoutingTab('proxy-panel');
 
@@ -1320,181 +1652,227 @@
         });
     </script>
 </head>
-<body class="min-h-screen bg-slate-100 text-slate-900">
-    <div class="flex min-h-screen">
-        <aside class="w-72 min-h-screen bg-slate-900 text-white p-6">
-            <div class="mb-8">
-                <div class="text-2xl font-bold">Chat2API Console</div>
-                <div class="text-xs text-slate-400 mt-2">多账号 / 多代理 / 固定路由管理台</div>
+<body class="min-h-screen text-slate-900">
+    <div class="admin-shell flex min-h-screen">
+        <aside class="sidebar w-64 shrink-0 border-r border-slate-200 bg-white/85 p-4 lg:min-h-screen">
+            <div class="mb-6 flex items-center gap-3 px-2">
+                <div class="grid h-10 w-10 place-items-center rounded-2xl bg-blue-600 text-lg font-black text-white shadow-lg shadow-blue-600/20">C</div>
+                <div>
+                    <div class="text-lg font-black tracking-tight text-slate-950">chat2api</div>
+                    <div class="text-xs font-medium text-slate-400">Orchestrator</div>
+                </div>
             </div>
-            <nav class="space-y-2 text-sm">
-                <button type="button" data-page-target="overview-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-800 transition">控制台总览</button>
-                <!-- 单容器单账号场景下"账号与令牌"页冗余，2026-05-11 隐藏菜单入口；section/JS 完整保留以便恢复 -->
-                <!-- <button type="button" data-page-target="accounts-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">账号与令牌</button> -->
-                <button type="button" data-page-target="routing-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">代理与路由</button>
-                <button type="button" data-page-target="harvester-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">账号采集 Harvester</button>
-                <button type="button" data-page-target="logs-page" class="w-full text-left px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-700 transition text-slate-300">运行日志</button>
+            <nav class="side-nav space-y-1 text-sm font-semibold">
+                <button type="button" data-page-target="overview-page" class="nav-item"><span>⌂</span><span>仪表盘</span></button>
+                <button type="button" data-page-target="accounts-page" class="nav-item nav-item-active"><span>▣</span><span>账号实例</span></button>
+                <button type="button" data-page-target="routing-page" class="nav-item"><span>⇄</span><span>代理与路由</span></button>
+                <button type="button" data-page-target="harvester-page" class="nav-item"><span>◎</span><span>账号采集</span></button>
+                <button type="button" data-page-target="logs-page" class="nav-item"><span>☷</span><span>运行日志</span></button>
             </nav>
+            <div class="mt-8 hidden rounded-3xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500 lg:block">
+                <div class="mb-2 font-bold text-slate-700">系统状态</div>
+                <div class="flex items-center gap-2 text-emerald-600"><span class="status-dot bg-emerald-500"></span>运行正常</div>
+                <div class="mt-3">服务已稳定运行</div>
+                <div class="mt-4 flex items-center justify-between border-t border-slate-200 pt-3">
+                    <span>版本</span><span class="font-semibold text-slate-700">v1.4.3</span>
+                </div>
+            </div>
         </aside>
 
-        <main class="flex-1 p-8">
-            <div id="overview-page" data-admin-page class="space-y-8">
-            <section id="dashboard-section" data-admin-section>
-                <div class="flex items-center justify-between mb-4">
-                    <div>
-                        <h1 class="text-3xl font-bold">控制台总览</h1>
-                        <p class="text-slate-600 mt-1">集中查看账号健康度、代理负载、告警和 API 测试样例。</p>
+        <main class="min-w-0 flex-1 p-4 lg:p-6">
+            <header class="glass-panel sticky top-0 z-30 mb-6 rounded-3xl px-4 py-3">
+                <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                    <div class="flex flex-wrap items-center gap-3 text-sm">
+                        <span class="inline-flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 font-semibold text-emerald-700"><span class="status-dot bg-emerald-500"></span>生产环境</span>
+                        <span class="text-slate-500">服务器时间 <span id="serverClock" class="font-semibold text-slate-700">--</span></span>
+                        <span id="statusText" class="rounded-xl bg-slate-100 px-3 py-2 text-xs font-medium text-slate-500">就绪</span>
                     </div>
-                    <div class="flex items-center gap-3">
-                        <div class="text-sm text-slate-500">最后发布：<span id="updatedAt">尚未发布</span></div>
-                        <button id="importAccountsButton" class="px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm">新增账号</button>
-                        <button id="logoutButton" class="px-4 py-2 rounded-2xl bg-white border border-slate-200 text-sm">退出登录</button>
+                    <div class="flex flex-1 flex-col gap-2 sm:flex-row xl:max-w-3xl">
+                        <label class="relative flex-1">
+                            <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">⌕</span>
+                            <input id="globalSearchInput" type="search" placeholder="搜索账号、别名、代理、状态..." class="w-full rounded-2xl border border-slate-200 bg-white/90 py-2.5 pl-9 pr-4 text-sm shadow-sm outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-100">
+                        </label>
+                        <button id="topRefreshButton" class="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">刷新</button>
+                        <button id="logoutButton" class="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">退出</button>
                     </div>
                 </div>
-                <div id="summaryGrid" class="grid grid-cols-2 lg:grid-cols-6 gap-4"></div>
-            </section>
+            </header>
 
-            <section class="grid lg:grid-cols-3 gap-6">
-                <div class="lg:col-span-2 bg-white rounded-3xl shadow-sm p-6">
-                    <div class="flex items-center justify-between mb-4">
-                        <h2 class="text-xl font-semibold">IP 负载概览</h2>
-                        <div class="text-sm text-slate-500">固定映射后会同步到 <code>fp_map.json</code></div>
-                    </div>
-                    <div id="ipGrid" class="grid md:grid-cols-2 gap-4"></div>
-                </div>
-                <div class="bg-white rounded-3xl shadow-sm p-6">
-                    <div class="flex items-center justify-between mb-4">
-                        <h2 class="text-xl font-semibold">告警中心</h2>
-                    </div>
-                    <div id="alertsList" class="space-y-3"></div>
-                </div>
-            </section>
-
-            <section class="bg-white rounded-3xl shadow-sm p-6">
-                <div class="flex items-center justify-between mb-4">
-                    <div>
-                        <h2 class="text-xl font-semibold">接口测试样例</h2>
-                        <p class="text-sm text-slate-500 mt-1">一键复制模型探测和聊天测试命令，方便你本地或服务器直接验证。</p>
-                    </div>
-                    <div id="copyToast" class="hidden text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-2xl px-3 py-2">测试命令已复制到剪贴板</div>
-                </div>
-                <div class="grid lg:grid-cols-2 gap-6">
-                    <div class="rounded-2xl border border-slate-200 p-4 bg-slate-50">
-                        <div class="flex items-center justify-between mb-3">
-                            <div class="font-medium">模型列表测试</div>
-                            <button id="copyModelsButton" class="px-3 py-2 rounded-xl bg-white border border-slate-200 text-sm text-slate-700 hover:bg-slate-100 active:scale-[0.98] transition">复制</button>
-                        </div>
-                        <pre id="modelsTestCommand" class="text-xs leading-6 whitespace-pre-wrap break-all text-slate-700"></pre>
-                    </div>
-                    <div class="rounded-2xl border border-slate-200 p-4 bg-slate-50">
-                        <div class="flex items-center justify-between mb-3">
-                            <div class="font-medium">聊天接口测试</div>
-                            <button id="copyChatButton" class="px-3 py-2 rounded-xl bg-white border border-slate-200 text-sm text-slate-700 hover:bg-slate-100 active:scale-[0.98] transition">复制</button>
-                        </div>
-                        <pre id="apiTestCommand" class="text-xs leading-6 whitespace-pre-wrap break-all text-slate-700"></pre>
-                    </div>
-                </div>
-            </section>
-            </div>
-
-            <div id="routing-page" data-admin-page class="hidden space-y-8">
-            <section class="bg-white rounded-3xl shadow-sm p-6">
-                <div class="flex items-center justify-between gap-4 flex-wrap mb-6">
-                    <div>
-                        <h2 class="text-2xl font-semibold">当前实例代理</h2>
-                        <p class="text-sm text-slate-500 mt-1">一容器一账号一出口，只需要维护当前账号使用的代理。</p>
-                    </div>
-                    <div class="text-sm text-slate-500">保存后自动绑定到当前账号</div>
-                </div>
-
-                <div id="proxy-panel" data-routing-panel class="grid xl:grid-cols-[minmax(0,1fr)_280px] gap-6">
-                    <div id="proxy-section" data-admin-section class="bg-slate-50 rounded-3xl border border-slate-200 p-6">
-                        <div class="flex items-center justify-between gap-3 flex-wrap mb-4">
-                            <div>
-                                <h3 class="text-xl font-semibold">出口代理</h3>
-                                <p class="text-sm text-slate-500 mt-1">建议填写一条代理，格式支持 <code>名称 | socks5h://host:port</code>。</p>
-                            </div>
-                            <button id="testProxyButton" class="px-4 py-2 rounded-2xl bg-white border border-slate-200 text-sm">测试代理</button>
-                        </div>
-                        <textarea id="proxyInput" class="w-full min-h-44 p-4 rounded-2xl border border-slate-200 font-mono text-sm bg-white" placeholder="出口代理 | socks5h://user:pass@host:port"></textarea>
-                        <div id="proxyTestResult" class="mt-3 text-sm text-slate-500"></div>
-                    </div>
-
-                    <div id="routing-section" data-admin-section class="bg-slate-50 rounded-3xl border border-slate-200 p-6">
-                        <h3 class="text-xl font-semibold">保存绑定</h3>
-                        <p class="text-sm text-slate-500 mt-1">保存后会发布固定映射：当前账号 → 当前代理。</p>
-                        <input id="groupSizeInput" type="hidden" value="1">
-                        <button id="saveButton" class="w-full mt-6 px-5 py-3 rounded-2xl bg-slate-900 text-white">保存当前代理</button>
-                        <div id="statusText" class="mt-3 text-sm text-slate-500 min-h-5"></div>
-                    </div>
-                </div>
-
-                <table class="hidden">
-                    <tbody id="rulesTable"></tbody>
-                </table>
-            </section>
-            </div>
-
-            <div id="accounts-page" data-admin-page class="hidden space-y-8">
-            <section id="accounts-section" data-admin-section class="bg-white rounded-3xl shadow-sm p-6">
-                <div class="flex items-center justify-between mb-4">
-                    <div>
-                        <h2 class="text-xl font-semibold">账号与令牌管理</h2>
-                        <p class="text-sm text-slate-500 mt-1">查看账号绑定关系、备注和刷新状态，支持直接编辑并批量刷新全部 RefreshToken。</p>
-                    </div>
-                    <button id="refreshAllButton" class="px-4 py-2 rounded-2xl bg-blue-600 text-white text-sm">批量刷新全部 RT</button>
-                </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
-                        <thead>
-                                <tr class="text-left border-b border-slate-200">
-                                    <th class="py-3">账号</th>
-                                    <th class="py-3">Token</th>
-                                    <th class="py-3">备注</th>
-                                    <th class="py-3">类型</th>
-                                    <th class="py-3">状态</th>
-                                    <th class="py-3">绑定 IP</th>
-                                    <th class="py-3">分组</th>
-                                    <th class="py-3">最近更新</th>
-                                    <th class="py-3">刷新状态</th>
-                                    <th class="py-3">操作</th>
-                                </tr>
-                        </thead>
-                        <tbody id="accountsTable"></tbody>
-                    </table>
-                </div>
-            </section>
-            </div>
-
-            <div id="harvester-page" data-admin-page class="hidden space-y-8">
-                <section class="bg-white rounded-3xl shadow-sm p-6">
-                    <div class="flex items-start justify-between mb-4 flex-wrap gap-3">
+            <div id="accounts-page" data-admin-page class="space-y-6">
+                <section id="accounts-section" data-admin-section>
+                    <div class="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                         <div>
-                            <h2 class="text-xl font-semibold">账号采集 Harvester</h2>
-                            <p class="text-sm text-slate-500 mt-1">
-                                服务器端<b>不存密码</b>。点账号行的"🍪 粘贴 Cookie"，
-                                把 chatgpt.com 浏览器里的 <code>__Secure-next-auth.session-token</code> 贴过来即可。
-                            </p>
+                            <p class="text-sm font-semibold text-blue-600">Account Instances</p>
+                            <h1 class="mt-1 text-3xl font-black tracking-tight text-slate-950">账号实例</h1>
+                            <p class="mt-1 text-sm text-slate-500">集中查看账号健康、代理绑定和刷新状态。</p>
                         </div>
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <button id="harvAddButton" class="px-3 py-2 rounded-2xl bg-slate-900 text-white text-sm">新增账号</button>
-                            <button id="harvBulkImportButton" class="px-3 py-2 rounded-2xl bg-white border border-slate-200 text-sm">批量导入</button>
-                            <button id="harvRefreshButton" class="px-3 py-2 rounded-2xl bg-slate-100 text-sm">刷新</button>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="text-sm text-slate-500">最后发布：<span id="updatedAt" class="font-semibold text-slate-700">尚未发布</span></span>
+                            <button id="refreshAllButton" class="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700">批量刷新 RT</button>
+                            <button id="importAccountsButton" class="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20">+ 新增账号</button>
                         </div>
                     </div>
-                    <div id="harvStats" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4"></div>
-                    <div id="harvStatusText" class="text-xs text-slate-500 mb-2">--</div>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-sm">
-                            <thead>
-                                <tr class="text-left border-b border-slate-200">
-                                    <th class="py-3">Email</th>
-                                    <th class="py-3">备注</th>
-                                    <th class="py-3">代理</th>
-                                    <th class="py-3">最近 rt</th>
-                                    <th class="py-3">上次采集</th>
-                                    <th class="py-3">状态</th>
-                                    <th class="py-3">操作</th>
+
+                    <div id="summaryGrid" class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6"></div>
+
+                    <div class="mt-5 grid gap-4 2xl:grid-cols-[minmax(0,1fr)_360px]">
+                        <div class="glass-panel overflow-hidden rounded-3xl">
+                            <div class="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+                                <div>
+                                    <h2 class="text-lg font-black text-slate-950">实例列表</h2>
+                                    <p id="accountTableCount" class="mt-1 text-xs text-slate-500">--</p>
+                                </div>
+                                <div class="flex flex-wrap gap-2 text-xs font-semibold text-slate-500">
+                                    <span class="rounded-xl bg-blue-50 px-3 py-2 text-blue-700">全部</span>
+                                    <span class="rounded-xl bg-emerald-50 px-3 py-2 text-emerald-700">Healthy</span>
+                                    <span class="rounded-xl bg-orange-50 px-3 py-2 text-orange-700">Degraded</span>
+                                </div>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="admin-table w-full min-w-[980px] text-sm">
+                                    <thead class="bg-slate-50/80">
+                                        <tr class="text-left">
+                                            <th class="py-3 pl-4 pr-3">账号</th>
+                                            <th class="px-3 py-3">标签/分组</th>
+                                            <th class="px-3 py-3">代理</th>
+                                            <th class="px-3 py-3">状态</th>
+                                            <th class="px-3 py-3">最近刷新</th>
+                                            <th class="py-3 pl-3 pr-4 text-right">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="accountsTable"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <aside id="accountDetailPanel" class="glass-panel rounded-3xl p-4 2xl:sticky 2xl:top-28 2xl:self-start">
+                            <div class="mb-4 flex items-center justify-between">
+                                <h2 class="text-base font-black text-slate-950">实例详情</h2>
+                                <button id="accountDetailClose" class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500">清空</button>
+                            </div>
+                            <div id="accountDetailEmpty" class="rounded-3xl border border-dashed border-slate-300 bg-white/70 p-8 text-center text-sm text-slate-500">
+                                点击左侧账号行查看详情。
+                            </div>
+                            <div id="accountDetailBody" class="hidden"></div>
+                        </aside>
+                    </div>
+                </section>
+            </div>
+
+            <div id="overview-page" data-admin-page class="hidden space-y-6">
+                <section id="dashboard-section" data-admin-section>
+                    <div class="mb-4">
+                        <p class="text-sm font-semibold text-blue-600">Dashboard</p>
+                        <h1 class="mt-1 text-3xl font-black tracking-tight text-slate-950">仪表盘</h1>
+                        <p class="mt-1 text-sm text-slate-500">查看代理负载、告警和 API 测试样例。</p>
+                    </div>
+                </section>
+
+                <section class="grid gap-5 xl:grid-cols-3">
+                    <div class="glass-panel rounded-3xl p-5 xl:col-span-2">
+                        <div class="mb-4 flex items-center justify-between gap-3">
+                            <h2 class="text-lg font-black text-slate-950">IP 负载概览</h2>
+                            <div class="text-sm text-slate-500">映射同步到 <code>fp_map.json</code></div>
+                        </div>
+                        <div id="ipGrid" class="grid gap-4 md:grid-cols-2"></div>
+                    </div>
+                    <div class="glass-panel rounded-3xl p-5">
+                        <h2 class="mb-4 text-lg font-black text-slate-950">告警中心</h2>
+                        <div id="alertsList" class="space-y-3"></div>
+                    </div>
+                </section>
+
+                <section class="glass-panel rounded-3xl p-5">
+                    <div class="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                            <h2 class="text-lg font-black text-slate-950">接口测试样例</h2>
+                            <p class="mt-1 text-sm text-slate-500">一键复制模型探测和聊天测试命令。</p>
+                        </div>
+                        <div id="copyToast" class="hidden rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">测试命令已复制到剪贴板</div>
+                    </div>
+                    <div class="grid gap-4 lg:grid-cols-2">
+                        <div class="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                            <div class="mb-3 flex items-center justify-between">
+                                <div class="font-semibold">模型列表测试</div>
+                                <button id="copyModelsButton" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">复制</button>
+                            </div>
+                            <pre id="modelsTestCommand" class="whitespace-pre-wrap break-all text-xs leading-6 text-slate-700"></pre>
+                        </div>
+                        <div class="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                            <div class="mb-3 flex items-center justify-between">
+                                <div class="font-semibold">聊天接口测试</div>
+                                <button id="copyChatButton" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">复制</button>
+                            </div>
+                            <pre id="apiTestCommand" class="whitespace-pre-wrap break-all text-xs leading-6 text-slate-700"></pre>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <div id="routing-page" data-admin-page class="hidden space-y-6">
+                <section class="glass-panel rounded-3xl p-5">
+                    <div class="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                            <p class="text-sm font-semibold text-blue-600">Routing</p>
+                            <h2 class="mt-1 text-3xl font-black tracking-tight text-slate-950">代理与路由</h2>
+                            <p class="mt-1 text-sm text-slate-500">一容器一账号一出口，只维护当前账号使用的代理。</p>
+                        </div>
+                        <div class="text-sm text-slate-500">保存后自动绑定到当前账号</div>
+                    </div>
+
+                    <div id="proxy-panel" data-routing-panel class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
+                        <div id="proxy-section" data-admin-section class="rounded-3xl border border-slate-200 bg-white p-5">
+                            <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+                                <div>
+                                    <h3 class="text-lg font-black text-slate-950">出口代理</h3>
+                                    <p class="mt-1 text-sm text-slate-500">格式支持 <code>名称 | socks5h://host:port</code>。</p>
+                                </div>
+                                <button id="testProxyButton" class="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700">测试代理</button>
+                            </div>
+                            <textarea id="proxyInput" class="min-h-44 w-full rounded-3xl border border-slate-200 bg-slate-50 p-4 font-mono text-sm outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100" placeholder="出口代理 | socks5h://user:pass@host:port"></textarea>
+                            <div id="proxyTestResult" class="mt-3 text-sm text-slate-500"></div>
+                        </div>
+
+                        <div id="routing-section" data-admin-section class="rounded-3xl border border-slate-200 bg-white p-5">
+                            <h3 class="text-lg font-black text-slate-950">保存绑定</h3>
+                            <p class="mt-1 text-sm text-slate-500">发布固定映射：当前账号 → 当前代理。</p>
+                            <input id="groupSizeInput" type="hidden" value="1">
+                            <button id="saveButton" class="mt-6 w-full rounded-2xl bg-slate-950 px-5 py-3 font-semibold text-white shadow-lg shadow-slate-900/10">保存当前代理</button>
+                            <p class="mt-3 text-xs text-slate-400">操作结果会显示在顶部状态栏。</p>
+                        </div>
+                    </div>
+
+                    <table class="hidden"><tbody id="rulesTable"></tbody></table>
+                </section>
+            </div>
+
+            <div id="harvester-page" data-admin-page class="hidden space-y-6">
+                <section class="glass-panel rounded-3xl p-5">
+                    <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <p class="text-sm font-semibold text-blue-600">Harvester</p>
+                            <h2 class="mt-1 text-3xl font-black tracking-tight text-slate-950">账号采集</h2>
+                            <p class="mt-1 text-sm text-slate-500">服务器端不存密码；粘贴 ChatGPT 浏览器 Cookie 即可导入。</p>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button id="harvAddButton" class="rounded-2xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white">新增账号</button>
+                            <button id="harvBulkImportButton" class="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">批量导入</button>
+                            <button id="harvRefreshButton" class="rounded-2xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">刷新</button>
+                        </div>
+                    </div>
+                    <div id="harvStats" class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5"></div>
+                    <div id="harvStatusText" class="mb-2 text-xs text-slate-500">--</div>
+                    <div class="overflow-x-auto rounded-3xl border border-slate-200 bg-white">
+                        <table class="w-full min-w-[760px] text-sm">
+                            <thead class="bg-slate-50">
+                                <tr class="text-left text-xs font-bold uppercase tracking-wide text-slate-500">
+                                    <th class="py-3 pl-4 pr-3">Email</th>
+                                    <th class="px-3 py-3">备注</th>
+                                    <th class="px-3 py-3">代理</th>
+                                    <th class="px-3 py-3">最近 rt</th>
+                                    <th class="px-3 py-3">上次采集</th>
+                                    <th class="px-3 py-3">状态</th>
+                                    <th class="py-3 pl-3 pr-4">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="harvAccountsTable"></tbody>
@@ -1503,39 +1881,34 @@
                 </section>
             </div>
 
-            <div id="logs-page" data-admin-page class="hidden space-y-8">
-            <section id="logs-section" data-admin-section class="bg-white rounded-3xl shadow-sm p-6">
-                <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
-                    <div>
-                        <h2 class="text-xl font-semibold">运行日志中心</h2>
-                        <p class="text-sm text-slate-500 mt-1">实时查看最近的运行日志；每 <span id="logsIntervalLabel">3</span> 秒自动刷新。<span id="logsCapacityHint" class="text-slate-400"></span></p>
+            <div id="logs-page" data-admin-page class="hidden space-y-6">
+                <section id="logs-section" data-admin-section class="glass-panel rounded-3xl p-5">
+                    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <p class="text-sm font-semibold text-blue-600">Logs</p>
+                            <h2 class="mt-1 text-3xl font-black tracking-tight text-slate-950">运行日志</h2>
+                            <p class="mt-1 text-sm text-slate-500">每 <span id="logsIntervalLabel">3</span> 秒自动刷新。<span id="logsCapacityHint" class="text-slate-400"></span></p>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <select id="logsLevelSelect" class="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                                <option value="ALL">全部级别</option>
+                                <option value="DEBUG">DEBUG+</option>
+                                <option value="INFO" selected>INFO+</option>
+                                <option value="WARNING">WARNING+</option>
+                                <option value="ERROR">ERROR+</option>
+                            </select>
+                            <input id="logsKeywordInput" type="text" placeholder="关键字筛选" class="w-52 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                            <label class="flex items-center gap-1 text-xs text-slate-600"><input id="logsAutoScroll" type="checkbox" checked class="accent-slate-700">自动滚底</label>
+                            <label class="flex items-center gap-1 text-xs text-slate-600"><input id="logsAutoRefresh" type="checkbox" checked class="accent-slate-700">自动刷新</label>
+                            <button id="logsRefreshButton" class="rounded-2xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white">手动刷新</button>
+                            <button id="logsClearButton" class="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">清屏</button>
+                            <button id="logsDownloadFilteredButton" class="rounded-2xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white">下载当前</button>
+                            <button id="logsDownloadAllButton" class="rounded-2xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white">下载全部</button>
+                        </div>
                     </div>
-                    <div class="flex items-center gap-2 flex-wrap">
-                        <select id="logsLevelSelect" class="px-3 py-2 rounded-2xl border border-slate-200 text-sm">
-                            <option value="ALL">全部级别</option>
-                            <option value="DEBUG">DEBUG+</option>
-                            <option value="INFO" selected>INFO+</option>
-                            <option value="WARNING">WARNING+</option>
-                            <option value="ERROR">ERROR+</option>
-                        </select>
-                        <input id="logsKeywordInput" type="text" placeholder="关键字筛选 (如 chat_refresh)" class="px-3 py-2 rounded-2xl border border-slate-200 text-sm w-56">
-                        <label class="flex items-center gap-1 text-xs text-slate-600">
-                            <input id="logsAutoScroll" type="checkbox" checked class="accent-slate-700">
-                            自动滚底
-                        </label>
-                        <label class="flex items-center gap-1 text-xs text-slate-600">
-                            <input id="logsAutoRefresh" type="checkbox" checked class="accent-slate-700">
-                            自动刷新
-                        </label>
-                        <button id="logsRefreshButton" class="px-3 py-2 rounded-2xl bg-slate-900 text-white text-sm">手动刷新</button>
-                        <button id="logsClearButton" class="px-3 py-2 rounded-2xl bg-white border border-slate-200 text-sm">清屏</button>
-                        <button id="logsDownloadFilteredButton" class="px-3 py-2 rounded-2xl bg-blue-600 text-white text-sm">下载当前</button>
-                        <button id="logsDownloadAllButton" class="px-3 py-2 rounded-2xl bg-emerald-600 text-white text-sm">下载全部</button>
-                    </div>
-                </div>
-                <div id="logsStatus" class="text-xs text-slate-500 mb-2">--</div>
-                <pre id="logsViewer" class="bg-slate-950 text-slate-100 rounded-2xl p-4 font-mono text-xs leading-5 overflow-auto" style="max-height: 480px; white-space: pre-wrap; word-break: break-all;"></pre>
-            </section>
+                    <div id="logsStatus" class="mb-2 text-xs text-slate-500">--</div>
+                    <pre id="logsViewer" class="overflow-auto rounded-3xl bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100" style="max-height: 540px; white-space: pre-wrap; word-break: break-all;"></pre>
+                </section>
             </div>
         </main>
     </div>
