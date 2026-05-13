@@ -21,13 +21,73 @@ def _stringify_ch_value(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+def _infer_arch(platform_str):
+    """根据 ch.platform 推断 sec-ch-ua-arch（Chromium 不暴露 arch 库字段，需手动推断）。
+
+    主流分布：macOS Apple Silicon (arm) 占 70%、Intel x86 30%；
+    Windows 几乎全是 x86_64；Linux x86_64 居多。
+    """
+    p = (platform_str or "").strip('"').lower()
+    if p == "macos":
+        # 与真实分布对齐：70% arm
+        return '"arm"' if random.random() < 0.7 else '"x86"'
+    if p in ("windows", "linux", "chromeos"):
+        return '"x86"'
+    return '"x86"'
+
+
+def _extract_full_version(ua_text, brands_full):
+    """从 UA 或 brands_full_version_list 中提取 Chrome 完整版本号，如 "146.0.7680.121"。"""
+    try:
+        if "Chrome/" in ua_text:
+            ver = ua_text.split("Chrome/")[1].split(" ")[0]
+            if ver and ver != "0.0.0.0":
+                return f'"{ver}"'
+    except Exception:
+        pass
+    try:
+        if brands_full:
+            # 形如 '"Chromium";v="146.0.7680.121", "Google Chrome";v="146.0.7680.121", ...'
+            import re as _re
+            m = _re.search(r'"Google Chrome";v="([0-9.]+)"', brands_full)
+            if m:
+                return f'"{m.group(1)}"'
+            m = _re.search(r'"Chromium";v="([0-9.]+)"', brands_full)
+            if m:
+                return f'"{m.group(1)}"'
+    except Exception:
+        pass
+    return None
+
+
 def select_impersonate(user_agent):
+    """根据 UA 选择最接近的 curl_cffi 浏览器指纹（TLS/JA3 + HTTP2 帧）。
+
+    与真实 Chrome 主版本对齐能显著降低风控评分；偏离过远（如 UA=Chrome147 但 TLS=chrome119）
+    会被识别为自动化客户端。当前 curl_cffi 0.7+ 支持最新到 chrome136。
+    """
     ua = (user_agent or "").lower()
+    # Edge 与 Chrome 共用引擎，使用 chrome136
     if "edg/" in ua:
-        return "chrome123"
+        return "chrome136"
     if "chrome/" in ua or "chromium/" in ua:
-        return "chrome123"
-    return "chrome123"
+        # 解析 Chrome 主版本号
+        try:
+            ver = int(ua.split("chrome/")[1].split(".")[0])
+        except (IndexError, ValueError):
+            return "chrome136"
+        if ver >= 136:
+            return "chrome136"
+        if ver >= 131:
+            return "chrome131"
+        if ver >= 124:
+            return "chrome124"
+        if ver >= 123:
+            return "chrome123"
+        if ver >= 120:
+            return "chrome120"
+        return "chrome119"
+    return "chrome136"
 
 
 def get_fp(req_token):
@@ -54,6 +114,26 @@ def get_fp(req_token):
             globals.fp_map[req_token] = fp
             with open(globals.FP_FILE, "w", encoding="utf-8") as f:
                 json.dump(globals.fp_map, f, indent=4)
+        # 老 fp 迁移：补齐 oai-session-id 与高熵 sec-ch-ua-* 头（旧账号也能享受加固）
+        _migrated = False
+        if "oai-session-id" not in fp:
+            fp["oai-session-id"] = str(uuid.uuid4())
+            _migrated = True
+        if "sec-ch-ua-platform" in fp and "sec-ch-ua-arch" not in fp:
+            fp["sec-ch-ua-arch"] = _infer_arch(fp.get("sec-ch-ua-platform"))
+            _migrated = True
+        # 老 fp 缺少完整高熵 CH 头时，仅打提示日志（不强制重生，避免破坏 strict_ip_binding 画像）
+        # 用户可手动删除 data/fp_map.json 让新账号走完整生成流程
+        if "sec-ch-ua-platform" in fp and "sec-ch-ua-full-version-list" not in fp:
+            # 至少补 full-version（基于 UA 解析出 Chrome 版本号）
+            full_ver = _extract_full_version(fp.get("user-agent", ""), None)
+            if full_ver and "sec-ch-ua-full-version" not in fp:
+                fp["sec-ch-ua-full-version"] = full_ver
+                _migrated = True
+        if _migrated:
+            globals.fp_map[req_token] = fp
+            with open(globals.FP_FILE, "w", encoding="utf-8") as f:
+                json.dump(globals.fp_map, f, indent=4, ensure_ascii=False)
         # 严格指纹绑定：开启后绝不因 user_agents_list 变化而漂移 UA，保留历史画像
         if (not (configs.enable_antiban and configs.strict_ip_binding)
                 and configs.user_agents_list
@@ -67,8 +147,8 @@ def get_fp(req_token):
         return fp
     else:
         options = Options(version_ranges={
-            'chrome': VersionRange(min_version=124),
-            'edge': VersionRange(min_version=124),
+            'chrome': VersionRange(min_version=140),
+            'edge': VersionRange(min_version=140),
         })
         ua = ua_generator.generate(
             device=configs.device_tuple if configs.device_tuple else ('desktop'),
@@ -81,12 +161,33 @@ def get_fp(req_token):
             "user-agent": user_agent,
             "impersonate": select_impersonate(user_agent),
             "proxy_url": bound_proxy or (random.choice(configs.proxy_url_list) if configs.proxy_url_list else None),
-            "oai-device-id": str(uuid.uuid4())
+            "oai-device-id": str(uuid.uuid4()),
+            # 浏览器 tab/session 级稳定标识（真实浏览器同一 tab 内不变）
+            "oai-session-id": str(uuid.uuid4()),
         }
         if ua.device == "desktop" and ua.browser in ("chrome", "edge"):
+            # 标准 3 个低熵 CH 头
             fp["sec-ch-ua-platform"] = _stringify_ch_value(ua.ch.platform)
             fp["sec-ch-ua"] = _stringify_ch_value(ua.ch.brands)
             fp["sec-ch-ua-mobile"] = _stringify_ch_value(ua.ch.mobile)
+            # 高熵 CH 头（Chromium 124+ 默认在 same-origin 请求中携带）
+            brands_full = getattr(ua.ch, "brands_full_version_list", None)
+            if brands_full:
+                fp["sec-ch-ua-full-version-list"] = _stringify_ch_value(brands_full)
+            full_ver = _extract_full_version(user_agent, brands_full)
+            if full_ver:
+                fp["sec-ch-ua-full-version"] = full_ver
+            bitness = getattr(ua.ch, "bitness", None)
+            if bitness:
+                fp["sec-ch-ua-bitness"] = _stringify_ch_value(bitness)
+            model = getattr(ua.ch, "model", None)
+            if model is not None:
+                fp["sec-ch-ua-model"] = _stringify_ch_value(model)
+            platform_version = getattr(ua.ch, "platform_version", None)
+            if platform_version:
+                fp["sec-ch-ua-platform-version"] = _stringify_ch_value(platform_version)
+            # arch 需手动推断（ua_generator 不直接提供）
+            fp["sec-ch-ua-arch"] = _infer_arch(fp.get("sec-ch-ua-platform"))
 
         if not req_token:
             return fp

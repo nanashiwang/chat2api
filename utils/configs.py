@@ -87,6 +87,18 @@ init_group_size = int(os.getenv('INIT_GROUP_SIZE', 25))
 init_apply_on_empty = is_true(os.getenv('INIT_APPLY_ON_EMPTY', True))
 init_force = is_true(os.getenv('INIT_FORCE', False))
 
+# ========================= OpenAI 前端版本指纹（反降智） =========================
+# 这两个值需要定期（1-2 周）从 chatgpt.com 的真实请求中刷新，否则会被风控识别
+# 抓取方法：浏览器登录 chatgpt.com → F12 Network → 任一 /backend-api/* 请求 → Headers
+oai_client_version = os.getenv(
+    'OAI_CLIENT_VERSION',
+    'prod-767c16cfce2fbcbdd1ae079fcf0b43838ff1b3ed',
+)
+oai_client_build_number = os.getenv(
+    'OAI_CLIENT_BUILD_NUMBER',
+    '6549031',
+)
+
 # ========================= OpenAI Auth0 凭据刷新 =========================
 # 默认 Codex CLI client_id（新版 OpenAI 登录流程，适用于 auth.openai.com 端点）
 # 老版 iOS app client_id `pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh` + auth0.openai.com 已失效（返回 404）
@@ -188,6 +200,8 @@ logger.info("CLIENT_TIMEZONE:   " + str(client_timezone))
 logger.info("CLIENT_TZ_OFFSET:  " + str(client_timezone_offset_min))
 logger.info("CHAT_REQUIREMENTS_TIMEOUT: " + str(chat_requirements_timeout))
 logger.info("CHAT_REQUEST_TIMEOUT:      " + str(chat_request_timeout))
+logger.info("OAI_CLIENT_VERSION:        " + str(oai_client_version))
+logger.info("OAI_CLIENT_BUILD_NUMBER:   " + str(oai_client_build_number))
 logger.info("------------------------- Gateway --------------------------")
 logger.info("ENABLE_GATEWAY:    " + str(enable_gateway))
 logger.info("AUTO_SEED:         " + str(auto_seed))

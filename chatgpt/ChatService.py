@@ -38,6 +38,8 @@ from utils.configs import (
     client_timezone,
     client_timezone_offset_min,
     enable_antiban,
+    oai_client_version,
+    oai_client_build_number,
 )
 
 
@@ -212,6 +214,18 @@ class ChatService:
             'sec-fetch-mode': 'cors',
             'sec-fetch-site': 'same-origin'
         }
+        # 反降智关键头：让请求看起来像真实 ChatGPT 前端发出
+        if oai_client_version:
+            self.base_headers['oai-client-version'] = oai_client_version
+        if oai_client_build_number:
+            self.base_headers['oai-client-build-number'] = str(oai_client_build_number)
+        # oai-session-id：与 oai-device-id 类似，token 级稳定（fp.py 在生成 fp 时填入）
+        session_id_header = self.fp.get("oai-session-id")
+        if session_id_header:
+            self.base_headers['oai-session-id'] = session_id_header
+        # 过滤掉 fp 中的非 HTTP-header 内部指纹字段（screen/viewport 等仅供 PoW 与 contextual_info 使用）
+        for _internal_key in ("screen", "hardware_concurrency", "device_memory", "pixel_ratio", "viewport"):
+            self.fp.pop(_internal_key, None)
         self.base_headers.update(_sanitize_headers(self.fp))
 
         if self.access_token:
@@ -423,17 +437,42 @@ class ChatService:
         logger.info(f"Model mapping: {self.origin_model} -> {self.req_model}")
         if self.system_hints:
             logger.info(f"System hints: {self.system_hints}")
+
+        # client_contextual_info：token 级稳定（首选）；同账号多次请求保持一致，避免抖动暴露自动化
+        ctx_info = None
+        try:
+            if enable_antiban:
+                from utils.antiban import fingerprint as _fp_mod
+                ctx_info = _fp_mod.get_contextual_info(self.req_token)
+        except Exception:
+            ctx_info = None
+
+        if ctx_info:
+            # 真实浏览器的 time_since_loaded 是秒级（用户读题、思考、打字），不是 50-500ms
+            client_contextual_info = {
+                "is_dark_mode": False,
+                "time_since_loaded": random.randint(3000, 30000),
+                "page_height": ctx_info["page_height"],
+                "page_width": ctx_info["page_width"],
+                "pixel_ratio": ctx_info["pixel_ratio"],
+                "screen_height": ctx_info["screen_height"],
+                "screen_width": ctx_info["screen_width"],
+            }
+        else:
+            # antiban 未启用：保持原行为但修正 pixel_ratio 取真实值（1.0/2.0 而非 1.5）
+            client_contextual_info = {
+                "is_dark_mode": False,
+                "time_since_loaded": random.randint(3000, 30000),
+                "page_height": random.randint(700, 1200),
+                "page_width": random.randint(1200, 2000),
+                "pixel_ratio": random.choice([1.0, 2.0]),
+                "screen_height": random.randint(900, 1440),
+                "screen_width": random.randint(1440, 2560),
+            }
+
         self.chat_request = {
             "action": "next",
-            "client_contextual_info": {
-                "is_dark_mode": False,
-                "time_since_loaded": random.randint(50, 500),
-                "page_height": random.randint(500, 1000),
-                "page_width": random.randint(1000, 2000),
-                "pixel_ratio": 1.5,
-                "screen_height": random.randint(800, 1200),
-                "screen_width": random.randint(1200, 2200),
-            },
+            "client_contextual_info": client_contextual_info,
             "conversation_mode": conversation_mode,
             "conversation_origin": None,
             "force_paragen": False,
@@ -462,6 +501,8 @@ class ChatService:
                 self.chat_request["timezone"] = self.antiban_ctx.header_overrides["_timezone_name"]
         if self.conversation_id:
             self.chat_request['conversation_id'] = self.conversation_id
+            # 真实浏览器的 referer 是具体会话 URL（如 /c/<conv_id>），不是首页
+            self.chat_headers['referer'] = f"{self.host_url}/c/{self.conversation_id}"
         return self.chat_request
 
     async def send_conversation(self):
