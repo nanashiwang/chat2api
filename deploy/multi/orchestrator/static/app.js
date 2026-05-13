@@ -962,17 +962,18 @@ function renderPgModels() {
     $('#pg-model').innerHTML = models.length
         ? models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('')
         : '<option value="">(无模型)</option>';
+    $('#pg-custom-model').value = '';
 }
 
 async function runPlayground() {
     const slug = $('#pg-slug').value;
-    const model = $('#pg-model').value;
+    const model = ($('#pg-custom-model').value.trim() || $('#pg-model').value).trim();
     const system = $('#pg-system').value;
     const user = $('#pg-user').value.trim();
     const temperature = parseFloat($('#pg-temp').value);
     const max_tokens = parseInt($('#pg-max-tokens').value, 10);
 
-    if (!slug || !model) { toast('请先选择实例与模型', true); return; }
+    if (!slug || !model) { toast('请先选择实例，或填写自定义模型', true); return; }
     if (!user) { toast('user prompt 不能为空', true); return; }
 
     const btn = $('#btn-pg-run');
