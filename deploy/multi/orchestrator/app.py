@@ -455,6 +455,81 @@ async def _forward_unified_request(
     )
 
 
+def _openai_sse_chunk(data: dict[str, Any]) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+
+def _as_openai_stream_events(data: dict[str, Any], model: str) -> list[str]:
+    created = int(data.get("created") or time.time())
+    chat_id = str(data.get("id") or f"chatcmpl-orch-{pysecrets.token_hex(12)}")
+    model_id = str(data.get("model") or model or "unknown")
+    choice = ((data.get("choices") or [{}])[0] or {})
+    message = choice.get("message") or {}
+    content = message.get("content")
+    if content is None:
+        content = data.get("output_text", "")
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False)
+    finish_reason = choice.get("finish_reason") or data.get("finish_reason") or "stop"
+
+    base = {
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model_id,
+    }
+    first = {
+        **base,
+        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+    }
+    delta = {
+        **base,
+        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+    }
+    final = {
+        **base,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+    }
+    return [_openai_sse_chunk(first), _openai_sse_chunk(delta), _openai_sse_chunk(final), "data: [DONE]\n\n"]
+
+
+async def _forward_unified_stream_compat(
+    backend: dict[str, str],
+    path: str,
+    body_json: dict[str, Any],
+    model: str,
+) -> StreamingResponse:
+    compat_body = {**body_json, "stream": False}
+    upstream_path = f"/{backend['api_prefix']}/v1/{path.lstrip('/')}"
+    url = f"http://c2a-{backend['slug']}:5005{upstream_path}"
+    headers = {
+        "Authorization": f"Bearer {backend['auth']}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Chat2API-Orchestrator": "1",
+        "X-Chat2API-Upstream-Slug": backend["slug"],
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0)) as client:
+        resp = await client.post(url, headers=headers, json=compat_body)
+        resp.raise_for_status()
+        data = resp.json()
+
+    async def event_generator():
+        for event in _as_openai_stream_events(data, model):
+            yield event
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Chat2API-Upstream-Slug": backend["slug"],
+            "X-Chat2API-Stream-Compat": "1",
+        },
+    )
+
+
 # ---------- 出口 IP 缓存 ----------
 
 _exit_ip_cache: dict[str, tuple[str, float]] = {}
@@ -668,9 +743,13 @@ async def unified_proxy(path: str, request: Request) -> Response:
         raise HTTPException(status_code=503, detail="暂无可用实例，请先在编排面板新增账号")
 
     last_error = ""
+    stream_compat = path.lstrip("/") == "chat/completions" and body_json.get("stream") is True
     for backend in _ordered_backends(candidates, affinity):
         try:
-            resp = await _forward_unified_request(request, backend, path, body)
+            if stream_compat:
+                resp = await _forward_unified_stream_compat(backend, path, body_json, model)
+            else:
+                resp = await _forward_unified_request(request, backend, path, body)
             audit(
                 "unified_proxy",
                 request,
@@ -679,9 +758,10 @@ async def unified_proxy(path: str, request: Request) -> Response:
                 path=f"/v1/{path}",
                 model=model or "",
                 affinity=bool(affinity),
+                stream_compat=stream_compat,
             )
             return resp
-        except httpx.RequestError as e:
+        except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as e:
             last_error = str(e)[:200]
             audit(
                 "unified_proxy",
