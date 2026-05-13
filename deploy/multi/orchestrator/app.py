@@ -89,9 +89,9 @@ logger = logging.getLogger("orchestrator")
 serializer = URLSafeTimedSerializer(SESSION_SECRET, salt="orch-session-v1")
 
 app = FastAPI(title="chat2api Orchestrator", docs_url=None, redoc_url=None)
-app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 APP_DIR = Path(__file__).parent
+STATIC_DIR = APP_DIR / "static"
 
 
 @functools.lru_cache(maxsize=1)
@@ -104,6 +104,19 @@ def static_version() -> str:
         except FileNotFoundError:
             digest.update(name.encode("utf-8"))
     return digest.hexdigest()[:12]
+
+
+@app.middleware("http")
+async def no_cache_orchestrator_ui(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(("/static/", "/orchestrator/static/")) or request.url.path in {"/", "/orchestrator/"}:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # ---------- 工具：subprocess + docker ----------
 

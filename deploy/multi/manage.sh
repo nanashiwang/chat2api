@@ -387,8 +387,8 @@ cmd_verify_orchestrator() {
     local port="${CHAT2API_GATEWAY_PORT:-60403}"
     local js_out models_out
     log "校验 orchestrator 静态资源..."
-    if ! js_out="$(check_contains "http://127.0.0.1:${port}/orchestrator/static/app.js" 'probe-models' 6)"; then
-        err "orchestrator: app.js 仍是旧版本（缺少模型看板代码）"
+    if ! js_out="$(check_contains "http://127.0.0.1:${port}/orchestrator/static/app.js" 'pg-custom-model' 6)"; then
+        err "orchestrator: app.js 仍是旧版本（缺少 Playground 自定义模型代码）"
         printf '%s\n' "$js_out" | head -3
         return 1
     fi
