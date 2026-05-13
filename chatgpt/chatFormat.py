@@ -14,6 +14,7 @@ from api.files import get_file_content
 from api.models import model_system_fingerprint
 from api.tokens import split_tokens_from_content, calculate_image_tokens, num_tokens_from_messages
 from chatgpt import session_sticky
+from utils import antiban
 from utils.Logger import logger
 
 moderation_message = "I'm sorry, I cannot provide or engage in any content related to pornography, violence, or any unethical material. If you have any other questions or need assistance, please feel free to let me know. I'll do my best to provide support and assistance."
@@ -174,6 +175,12 @@ async def stream_response(service, response, model, max_tokens):
                 conversation_id = chunk_old_data.get("conversation_id")
                 role = message.get('author', {}).get('role')
                 if role == 'user' or role == 'system':
+                    # 账号风险嗅探：system 消息常携带"账号异常"软警告 banner（Step A：仅记录）
+                    if role == 'system':
+                        try:
+                            antiban.sniff_account_warning(service.antiban_ctx, message, chunk_old_data)
+                        except Exception as _e:
+                            logger.error(f"[account_risk] sniff failed (suppressed): {_e}")
                     continue
 
                 status = message.get("status")
@@ -185,6 +192,11 @@ async def stream_response(service, response, model, max_tokens):
                 model_slug = meta_data.get("model_slug", model_slug)
 
                 if not message and chunk_old_data.get("type") == "moderation":
+                    # 账号风险嗅探：moderation chunk 偶尔也会携带风险信号
+                    try:
+                        antiban.sniff_account_warning(service.antiban_ctx, message or {}, chunk_old_data)
+                    except Exception as _e:
+                        logger.error(f"[account_risk] sniff failed (suppressed): {_e}")
                     delta = {"role": "assistant", "content": moderation_message}
                     finish_reason = "stop"
                     end = True

@@ -17,6 +17,8 @@ CONVERSATION_MAP_FILE = os.path.join(DATA_FOLDER, "conversation_map.json")
 ANTIBAN_BUCKET_FILE = os.path.join(DATA_FOLDER, "antiban_bucket.json")
 ANTIBAN_GEO_FILE = os.path.join(DATA_FOLDER, "antiban_geo.json")
 ANTIBAN_DEAD_FILE = os.path.join(DATA_FOLDER, "antiban_dead.json")
+# 账号风险嗅探：仅记录命中的软警告，不立即标 dead（Step A：观察期，校准关键词）
+ACCOUNT_WARNINGS_FILE = os.path.join(DATA_FOLDER, "account_warnings.json")
 # Harvester 账号元数据（不含密码，仅 email+note+proxy_name+采集历史）
 HARVESTER_ACCOUNTS_FILE = os.path.join(DATA_FOLDER, "harvester_accounts.json")
 
@@ -33,6 +35,8 @@ conversation_map = {}
 antiban_bucket = {"buckets": {}, "account_index": {}}
 antiban_geo_cache = {}
 antiban_dead_tokens = {}
+# 账号风险嗅探：token -> [{hit_at, snippet, pattern, conversation_id}, ...]
+account_warnings = {}
 impersonate_list = [
     "chrome119",
     "chrome120",
@@ -119,6 +123,13 @@ if os.path.exists(ANTIBAN_DEAD_FILE):
             antiban_dead_tokens = json.load(f)
         except:
             antiban_dead_tokens = {}
+
+if os.path.exists(ACCOUNT_WARNINGS_FILE):
+    with open(ACCOUNT_WARNINGS_FILE, "r", encoding="utf-8") as f:
+        try:
+            account_warnings = json.load(f)
+        except:
+            account_warnings = {}
 
 if os.path.exists(TOKENS_FILE):
     with open(TOKENS_FILE, "r", encoding="utf-8") as f:

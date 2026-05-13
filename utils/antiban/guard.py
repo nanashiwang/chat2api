@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from utils import configs
-from utils.antiban import bucket, circuit, cooldown, fingerprint, geo
+from utils.antiban import account_risk, bucket, circuit, cooldown, fingerprint, geo
 from utils.Logger import logger
 
 
@@ -96,3 +96,14 @@ async def report_success(ctx: AntibanContext) -> None:
     cooldown.record_request(ctx.token)
     circuit.handle_response_success(ctx.token)
     bucket.mark_used(ctx.token)
+
+
+def sniff_account_warning(ctx: AntibanContext, message: dict, raw_chunk: dict = None) -> None:
+    """流式响应中的账号风险嗅探（Step A：仅记录，不联动 cooldown/dead）。
+
+    调用方：chatgpt/chatFormat.py 的 stream_response，在 system 角色 continue 之前。
+    设计为同步非阻塞，任何异常都吞掉，确保不影响主流程。
+    """
+    if not ctx or not ctx.enabled:
+        return
+    account_risk.sniff(ctx.token, message or {}, raw_chunk or {})
