@@ -504,6 +504,7 @@ def _as_openai_stream_events(data: dict[str, Any], model: str) -> list[str]:
 
 
 async def _forward_unified_stream_compat(
+    request: Request,
     backend: dict[str, str],
     path: str,
     body_json: dict[str, Any],
@@ -512,15 +513,22 @@ async def _forward_unified_stream_compat(
     compat_body = {**body_json, "stream": False}
     upstream_path = f"/{backend['api_prefix']}/v1/{path.lstrip('/')}"
     url = f"http://c2a-{backend['slug']}:5005{upstream_path}"
+    if request.url.query:
+        url += f"?{request.url.query}"
+
     headers = {
-        "Authorization": f"Bearer {backend['auth']}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "X-Chat2API-Orchestrator": "1",
-        "X-Chat2API-Upstream-Slug": backend["slug"],
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in HOP_BY_HOP_HEADERS
     }
+    headers["Authorization"] = f"Bearer {backend['auth']}"
+    headers["Content-Type"] = "application/json"
+    headers["X-Chat2API-Orchestrator"] = "1"
+    headers["X-Chat2API-Upstream-Slug"] = backend["slug"]
+    content = json.dumps(compat_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
     async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0)) as client:
-        resp = await client.post(url, headers=headers, json=compat_body)
+        resp = await client.post(url, headers=headers, content=content)
         resp.raise_for_status()
         data = resp.json()
 
@@ -757,7 +765,7 @@ async def unified_proxy(path: str, request: Request) -> Response:
     for backend in _ordered_backends(candidates, affinity):
         try:
             if stream_compat:
-                resp = await _forward_unified_stream_compat(backend, path, body_json, model)
+                resp = await _forward_unified_stream_compat(request, backend, path, body_json, model)
             else:
                 resp = await _forward_unified_request(request, backend, path, body)
             audit(
