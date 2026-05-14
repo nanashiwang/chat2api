@@ -1,20 +1,18 @@
-import asyncio
 import hashlib
 import json
 import random
-import time
 import uuid
 
 from fastapi import HTTPException
 from starlette.concurrency import run_in_threadpool
 
-from api.files import get_image_size, get_file_extension, determine_file_use_case
-from api.models import augment_model_slugs, extract_model_slugs, get_response_model, resolve_request_model
-from chatgpt.authorization import get_req_token, verify_token
+from chatgpt.authorization import get_req_token
 from chatgpt.chatFormat import api_messages_to_chat, stream_response, format_not_stream_response, head_process_response
 from chatgpt.chatLimit import check_is_limit, handle_request_limit
 from chatgpt.fp import get_fp
 from chatgpt.proofofWork import get_config, get_dpl, get_answer_token, get_requirements_token
+from chatgpt.services import AuthMixin, FileMixin, ModelMixin
+from chatgpt.services._helpers import _sanitize_headers, _stringify_header_value
 
 from utils.Client import Client
 from utils.Logger import logger
@@ -32,7 +30,6 @@ from utils.configs import (
     turnstile_solver_url,
     oai_language,
     accept_language,
-    check_model,
     chat_requirements_timeout,
     chat_request_timeout,
     client_timezone,
@@ -43,33 +40,7 @@ from utils.configs import (
 )
 
 
-def _stringify_header_value(value):
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-
-
-def _sanitize_headers(headers):
-    clean = {}
-    for key, value in (headers or {}).items():
-        if not key:
-            continue
-        value = _stringify_header_value(value)
-        if value is not None:
-            clean[str(key)] = value
-    return clean
-
-
-class ChatService:
-    available_model_cache = {}
-    available_model_cache_ttl = 300
-
+class ChatService(AuthMixin, ModelMixin, FileMixin):
     def __init__(self, origin_token=None):
         # self.user_agent = random.choice(user_agents_list) if user_agents_list else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
         self.req_token = get_req_token(origin_token)
@@ -83,79 +54,6 @@ class ChatService:
         self.system_hints = []
         # Session sticky: 由 api 层 inject 后挂载，stream_response 嗅探时用于回写映射
         self.librechat_conv_id = None
-
-    def model_not_found(self):
-        return HTTPException(
-            status_code=404,
-            detail={
-                "message": f"The model `{self.origin_model}` does not exist or you do not have access to it.",
-                "type": "invalid_request_error",
-                "param": None,
-                "code": "model_not_found",
-            },
-        )
-
-    def get_model_cache_key(self):
-        token = self.req_token.split(",")[0] if self.req_token else "anon"
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        account_id = self.account_id or "default"
-        return f"{self.host_url}:{account_id}:{token_hash}"
-
-    async def fetch_available_models(self):
-        cache_key = self.get_model_cache_key()
-        now = time.time()
-        cached = self.available_model_cache.get(cache_key)
-        if cached and now - cached["time"] < self.available_model_cache_ttl:
-            return cached["slugs"]
-
-        url = f"{self.host_url}/backend-api/models?history_and_training_disabled={str(self.history_disabled).lower()}"
-        headers = self.base_headers.copy()
-        r = await self.s.get(url, headers=headers, timeout=10)
-        if r.status_code != 200:
-            detail = r.text
-            if "application/json" in r.headers.get("Content-Type", ""):
-                detail = r.json().get("detail", r.json())
-            raise HTTPException(status_code=r.status_code, detail=detail)
-
-        models_payload = r.json()
-        model_slugs = augment_model_slugs(extract_model_slugs(models_payload))
-        self.available_model_cache[cache_key] = {
-            "time": now,
-            "slugs": model_slugs,
-        }
-        logger.info(f"Available models exposed: {len(model_slugs)}")
-        return model_slugs
-
-    async def validate_model_access(self):
-        if self.gizmo_id:
-            return
-
-        if not self.access_token:
-            if self.req_model != "text-davinci-002-render-sha":
-                raise self.model_not_found()
-            return
-
-        if not (self.dynamic_model or check_model):
-            return
-
-        available_models = await self.fetch_available_models()
-        if self.req_model not in available_models:
-            logger.error(f"Model {self.req_model} not found in upstream models")
-            raise self.model_not_found()
-
-    async def resolve_auth_context(self):
-        if self.req_token:
-            req_len = len(self.req_token.split(","))
-            if req_len == 1:
-                self.access_token = await verify_token(self.req_token)
-                self.account_id = None
-            else:
-                self.access_token = await verify_token(self.req_token.split(",")[0])
-                self.account_id = self.req_token.split(",")[1]
-        else:
-            logger.info("Request token is empty, use no-auth 3.5")
-            self.access_token = None
-            self.account_id = None
 
     async def initialize_request_context(self):
         # Antiban: 在读取 fp 之前获取上下文（bucket/geo/冷却/熔断）
@@ -289,18 +187,6 @@ class ChatService:
             limit_response = await handle_request_limit(self.req_token, self.req_model)
             if limit_response:
                 raise HTTPException(status_code=429, detail=limit_response)
-
-    async def set_model(self):
-        self.origin_model = self.data.get("model", "gpt-3.5-turbo-0125")
-        self.resp_model = get_response_model(self.origin_model)
-        self.req_model, self.gizmo_id, self.dynamic_model = resolve_request_model(self.origin_model)
-
-        # 深度研究：模型名后缀识别（双模式触发之二）
-        # 当模型名包含 deep-research / deepresearch 时，自动注入 system_hints=["research"]
-        lower_origin = (self.origin_model or "").lower()
-        if "deep-research" in lower_origin or "deepresearch" in lower_origin:
-            if "research" not in self.system_hints:
-                self.system_hints = list(self.system_hints) + ["research"]
 
     async def get_chat_requirements(self):
         if conversation_only:
@@ -576,156 +462,6 @@ class ChatService:
             raise HTTPException(status_code=e.status_code, detail=e.detail)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-
-    async def get_download_url(self, file_id):
-        url = f"{self.base_url}/files/{file_id}/download"
-        headers = self.base_headers.copy()
-        try:
-            r = await self.s.get(url, headers=headers, timeout=10)
-            if r.status_code == 200:
-                download_url = r.json().get('download_url')
-                return download_url
-            else:
-                raise HTTPException(status_code=r.status_code, detail=r.text)
-        except Exception as e:
-            logger.error(f"Failed to get download url: {e}")
-            return ""
-
-    async def get_attachment_url(self, file_id, conversation_id):
-        url = f"{self.base_url}/conversation/{conversation_id}/attachment/{file_id}/download"
-        headers = self.base_headers.copy()
-        try:
-            r = await self.s.get(url, headers=headers, timeout=10)
-            if r.status_code == 200:
-                download_url = r.json().get('download_url')
-                return download_url
-            else:
-                raise HTTPException(status_code=r.status_code, detail=r.text)
-        except Exception as e:
-            logger.error(f"Failed to get download url: {e}")
-            return ""
-
-    async def get_download_url_from_upload(self, file_id):
-        url = f"{self.base_url}/files/{file_id}/uploaded"
-        headers = self.base_headers.copy()
-        try:
-            r = await self.s.post(url, headers=headers, json={}, timeout=10)
-            if r.status_code == 200:
-                download_url = r.json().get('download_url')
-                return download_url
-            else:
-                raise HTTPException(status_code=r.status_code, detail=r.text)
-        except Exception as e:
-            logger.error(f"Failed to get download url from upload: {e}")
-            return ""
-
-    async def get_upload_url(self, file_name, file_size, use_case="multimodal"):
-        url = f'{self.base_url}/files'
-        headers = self.base_headers.copy()
-        try:
-            r = await self.s.post(
-                url,
-                headers=headers,
-                json={"file_name": file_name, "file_size": file_size, "reset_rate_limits": False, "timezone_offset_min": client_timezone_offset_min, "use_case": use_case},
-                timeout=5,
-            )
-            if r.status_code == 200:
-                res = r.json()
-                file_id = res.get('file_id')
-                upload_url = res.get('upload_url')
-                logger.info(f"file_id: {file_id}, upload_url: {upload_url}")
-                return file_id, upload_url
-            else:
-                raise HTTPException(status_code=r.status_code, detail=r.text)
-        except Exception as e:
-            logger.error(f"Failed to get upload url: {e}")
-            return "", ""
-
-    async def upload(self, upload_url, file_content, mime_type):
-        headers = self.base_headers.copy()
-        headers.update(
-            {
-                'accept': 'application/json, text/plain, */*',
-                'content-type': mime_type,
-                'x-ms-blob-type': 'BlockBlob',
-                'x-ms-version': '2020-04-08',
-            }
-        )
-        headers.pop('authorization', None)
-        headers.pop('oai-device-id', None)
-        headers.pop('oai-language', None)
-        try:
-            r = await self.s.put(upload_url, headers=headers, data=file_content, timeout=60)
-            if r.status_code == 201:
-                return True
-            else:
-                raise HTTPException(status_code=r.status_code, detail=r.text)
-        except Exception as e:
-            logger.error(f"Failed to upload file: {e}")
-            return False
-
-    async def upload_file(self, file_content, mime_type):
-        if not file_content or not mime_type:
-            return None
-
-        width, height = None, None
-        if mime_type.startswith("image/"):
-            try:
-                width, height = await get_image_size(file_content)
-            except Exception as e:
-                logger.error(f"Error image mime_type, change to text/plain: {e}")
-                mime_type = 'text/plain'
-        file_size = len(file_content)
-        file_extension = await get_file_extension(mime_type)
-        file_name = f"{uuid.uuid4()}{file_extension}"
-        use_case = await determine_file_use_case(mime_type)
-
-        file_id, upload_url = await self.get_upload_url(file_name, file_size, use_case)
-        if file_id and upload_url:
-            if await self.upload(upload_url, file_content, mime_type):
-                download_url = await self.get_download_url_from_upload(file_id)
-                if download_url:
-                    file_meta = {
-                        "file_id": file_id,
-                        "file_name": file_name,
-                        "size_bytes": file_size,
-                        "mime_type": mime_type,
-                        "width": width,
-                        "height": height,
-                        "use_case": use_case,
-                    }
-                    logger.info(f"File_meta: {file_meta}")
-                    return file_meta
-
-    async def check_upload(self, file_id):
-        url = f'{self.base_url}/files/{file_id}'
-        headers = self.base_headers.copy()
-        try:
-            for i in range(30):
-                r = await self.s.get(url, headers=headers, timeout=5)
-                if r.status_code == 200:
-                    res = r.json()
-                    retrieval_index_status = res.get('retrieval_index_status', '')
-                    if retrieval_index_status == "success":
-                        break
-                await asyncio.sleep(1)
-            return True
-        except HTTPException:
-            return False
-
-    async def get_response_file_url(self, conversation_id, message_id, sandbox_path):
-        try:
-            url = f"{self.base_url}/conversation/{conversation_id}/interpreter/download"
-            params = {"message_id": message_id, "sandbox_path": sandbox_path}
-            headers = self.base_headers.copy()
-            r = await self.s.get(url, headers=headers, params=params, timeout=10)
-            if r.status_code == 200:
-                return r.json().get("download_url")
-            else:
-                return None
-        except Exception:
-            logger.info("Failed to get response file url")
-            return None
 
     async def close_client(self):
         if self.s:

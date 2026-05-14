@@ -10,6 +10,9 @@ import utils.globals as globals
 from utils import configs
 from utils.routing import get_bound_proxy
 
+MAX_SUPPORTED_CHROME_MAJOR = 124
+MIN_SUPPORTED_CHROME_MAJOR = 119
+
 
 def _stringify_ch_value(value):
     if value is None or isinstance(value, str):
@@ -64,22 +67,10 @@ def select_impersonate(user_agent):
     """根据 UA 选择最接近的 curl_cffi 浏览器指纹（TLS/JA3 + HTTP2 帧）。
 
     与真实 Chrome 主版本对齐能显著降低风控评分；偏离过远（如 UA=Chrome147 但 TLS=chrome119）
-    会被识别为自动化客户端。当前 curl_cffi 0.7+ 支持最新到 chrome136。
+    会被识别为自动化客户端。当前镜像固定 curl_cffi==0.7.3，最高安全使用 chrome124。
     """
     ua = (user_agent or "").lower()
-    # Edge 与 Chrome 共用引擎，使用 chrome136
-    if "edg/" in ua:
-        return "chrome136"
-    if "chrome/" in ua or "chromium/" in ua:
-        # 解析 Chrome 主版本号
-        try:
-            ver = int(ua.split("chrome/")[1].split(".")[0])
-        except (IndexError, ValueError):
-            return "chrome136"
-        if ver >= 136:
-            return "chrome136"
-        if ver >= 131:
-            return "chrome131"
+    def by_major(ver):
         if ver >= 124:
             return "chrome124"
         if ver >= 123:
@@ -87,7 +78,22 @@ def select_impersonate(user_agent):
         if ver >= 120:
             return "chrome120"
         return "chrome119"
-    return "chrome136"
+
+    # Edge 与 Chrome 共用 Chromium 内核，按主版本选择 curl_cffi 支持的最近指纹。
+    if "edg/" in ua:
+        try:
+            ver = int(ua.split("edg/")[1].split(".")[0])
+        except (IndexError, ValueError):
+            return "chrome124"
+        return by_major(ver)
+    if "chrome/" in ua or "chromium/" in ua:
+        # 解析 Chrome 主版本号
+        try:
+            ver = int(ua.split("chrome/")[1].split(".")[0])
+        except (IndexError, ValueError):
+            return "chrome124"
+        return by_major(ver)
+    return "chrome124"
 
 
 def get_fp(req_token):
@@ -147,8 +153,8 @@ def get_fp(req_token):
         return fp
     else:
         options = Options(version_ranges={
-            'chrome': VersionRange(min_version=140),
-            'edge': VersionRange(min_version=140),
+            'chrome': VersionRange(min_version=MIN_SUPPORTED_CHROME_MAJOR, max_version=MAX_SUPPORTED_CHROME_MAJOR),
+            'edge': VersionRange(min_version=MIN_SUPPORTED_CHROME_MAJOR, max_version=MAX_SUPPORTED_CHROME_MAJOR),
         })
         ua = ua_generator.generate(
             device=configs.device_tuple if configs.device_tuple else ('desktop'),
