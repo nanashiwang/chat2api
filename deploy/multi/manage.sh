@@ -385,11 +385,16 @@ cmd_verify() {
 cmd_verify_orchestrator() {
     require_compose
     local port="${CHAT2API_GATEWAY_PORT:-60403}"
-    local js_out models_out
+    local js_out app_out models_out
     log "校验 orchestrator 静态资源..."
     if ! js_out="$(check_contains "http://127.0.0.1:${port}/orchestrator/static/app.js" 'pg-custom-model' 6)"; then
         err "orchestrator: app.js 仍是旧版本（缺少 Playground 自定义模型代码）"
         printf '%s\n' "$js_out" | head -3
+        return 1
+    fi
+    if ! app_out="$(docker exec c2a-orchestrator grep -q 'X-Chat2API-Stream-Compat' /app/app.py 2>&1)"; then
+        err "orchestrator: app.py 仍是旧版本（缺少统一入口流式兼容代码）"
+        printf '%s\n' "$app_out" | head -3
         return 1
     fi
     if ! models_out="$(check_contains "http://127.0.0.1:${port}/orchestrator/static/models_by_plan.json" '"plans"' 6)"; then

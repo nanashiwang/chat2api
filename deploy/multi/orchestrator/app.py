@@ -459,6 +459,16 @@ def _openai_sse_chunk(data: dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
 
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
 def _as_openai_stream_events(data: dict[str, Any], model: str) -> list[str]:
     created = int(data.get("created") or time.time())
     chat_id = str(data.get("id") or f"chatcmpl-orch-{pysecrets.token_hex(12)}")
@@ -743,7 +753,7 @@ async def unified_proxy(path: str, request: Request) -> Response:
         raise HTTPException(status_code=503, detail="暂无可用实例，请先在编排面板新增账号")
 
     last_error = ""
-    stream_compat = path.lstrip("/") == "chat/completions" and body_json.get("stream") is True
+    stream_compat = path.lstrip("/") == "chat/completions" and _is_truthy(body_json.get("stream"))
     for backend in _ordered_backends(candidates, affinity):
         try:
             if stream_compat:
