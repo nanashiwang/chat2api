@@ -91,6 +91,24 @@ function escapeHtml(s) {
     }[c]));
 }
 
+function fmtNum(n) {
+    const value = Number(n || 0);
+    if (value >= 1000000) return (value / 1000000).toFixed(value >= 10000000 ? 0 : 2) + 'M';
+    if (value >= 1000) return value.toLocaleString();
+    return String(value);
+}
+
+function fmtMs(ms) {
+    const value = Number(ms || 0);
+    if (value >= 1000) return (value / 1000).toFixed(value >= 10000 ? 1 : 2) + 's';
+    return Math.round(value) + 'ms';
+}
+
+function parseUsageTs(ts) {
+    const t = Date.parse(ts || '');
+    return Number.isFinite(t) ? t : 0;
+}
+
 /**
  * 紧凑型行内模型 chip 渲染：最多展示 maxVisible 个，超出显示 "+N"。
  * 入参：models 可以是 ["gpt-5", ...] 或 [{id, source}, ...]
@@ -112,6 +130,27 @@ function renderInlineModels(models, maxVisible = 4) {
 let latestInstances = [];
 let selectedSlug = '';
 let instanceSearchQuery = '';
+let activePanel = 'instances';
+let usageRecords = [];
+let usageFilteredRecords = [];
+let usageLoaded = false;
+
+function switchPanel(panel) {
+    activePanel = panel || 'instances';
+    $$('[data-panel-body]').forEach(el => {
+        el.classList.toggle('hidden', el.dataset.panelBody !== activePanel);
+    });
+    $$('.orch-nav-item[data-panel]').forEach(btn => {
+        btn.classList.toggle('orch-nav-active', btn.dataset.panel === activePanel);
+    });
+    if (activePanel === 'usage' && !usageLoaded) {
+        loadUsage();
+    }
+}
+
+$$('.orch-nav-item[data-panel]').forEach(btn => {
+    btn.addEventListener('click', () => switchPanel(btn.dataset.panel));
+});
 
 function isHealthy(it) {
     return it.state === 'running' && it.health === 'healthy';
@@ -627,6 +666,296 @@ $('#btn-close-logs').addEventListener('click', () => {
 $('#btn-refresh-logs').addEventListener('click', refreshLogs);
 $('#log-target').addEventListener('change', refreshLogs);
 $('#log-tail').addEventListener('change', refreshLogs);
+
+// ---------- 使用日志 ----------
+
+function usageInRange(record, range) {
+    if (!range || range === 'all') return true;
+    const seconds = Number(range);
+    if (!seconds) return true;
+    const ts = parseUsageTs(record.ts);
+    if (!ts) return true;
+    return Date.now() - ts <= seconds * 1000;
+}
+
+function uniqueSorted(values) {
+    return Array.from(new Set(values.filter(Boolean).map(v => String(v)))).sort();
+}
+
+function syncUsageFilterOptions() {
+    const slugValue = $('#usage-slug').value;
+    const modelValue = $('#usage-model').value;
+    const endpointValue = $('#usage-endpoint').value;
+    const slugs = uniqueSorted(usageRecords.map(r => r.slug));
+    const models = uniqueSorted(usageRecords.map(r => r.model));
+    const endpoints = uniqueSorted(usageRecords.map(r => r.endpoint || String(r.path || '').split('/').pop()));
+    $('#usage-slug').innerHTML = '<option value="">全部容器</option>' + slugs.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+    $('#usage-model').innerHTML = '<option value="">全部模型</option>' + models.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+    $('#usage-endpoint').innerHTML = '<option value="">全部接口</option>' + endpoints.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+    $('#usage-slug').value = slugs.includes(slugValue) ? slugValue : '';
+    $('#usage-model').value = models.includes(modelValue) ? modelValue : '';
+    $('#usage-endpoint').value = endpoints.includes(endpointValue) ? endpointValue : '';
+}
+
+function applyUsageFilters() {
+    const range = $('#usage-range').value;
+    const slug = $('#usage-slug').value;
+    const model = $('#usage-model').value;
+    const endpoint = $('#usage-endpoint').value;
+    const ok = $('#usage-ok').value;
+    const stream = $('#usage-stream').value;
+    const q = ($('#usage-search').value || '').trim().toLowerCase();
+    usageFilteredRecords = usageRecords.filter(r => {
+        if (!usageInRange(r, range)) return false;
+        if (slug && r.slug !== slug) return false;
+        if (model && r.model !== model) return false;
+        const rowEndpoint = r.endpoint || String(r.path || '').split('/').pop();
+        if (endpoint && rowEndpoint !== endpoint) return false;
+        if (ok && String(Boolean(r.ok)) !== ok) return false;
+        if (stream && String(Boolean(r.stream)) !== stream) return false;
+        if (q) {
+            const haystack = [
+                r.request_id, r.slug, r.model, r.path, rowEndpoint, r.error, r.status
+            ].join(' ').toLowerCase();
+            if (!haystack.includes(q)) return false;
+        }
+        return true;
+    });
+    renderUsage();
+}
+
+function summarizeUsage(records) {
+    const total = records.length;
+    const success = records.filter(r => r.ok).length;
+    const failed = total - success;
+    const prompt = records.reduce((sum, r) => sum + Number(r.prompt_tokens || 0), 0);
+    const completion = records.reduce((sum, r) => sum + Number(r.completion_tokens || 0), 0);
+    const tokens = records.reduce((sum, r) => sum + Number(r.total_tokens || 0), 0);
+    const durations = records.map(r => Number(r.duration_ms || 0)).filter(n => Number.isFinite(n));
+    const avg = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
+    const sorted = [...durations].sort((a, b) => a - b);
+    const p95 = sorted.length ? sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)] : 0;
+    const bySlug = {};
+    for (const r of records) {
+        const slug = r.slug || '-';
+        if (!bySlug[slug]) bySlug[slug] = { slug, requests: 0, tokens: 0, errors: 0 };
+        bySlug[slug].requests += 1;
+        bySlug[slug].tokens += Number(r.total_tokens || 0);
+        if (!r.ok) bySlug[slug].errors += 1;
+    }
+    const slugs = Object.values(bySlug).sort((a, b) => (b.tokens - a.tokens) || (b.requests - a.requests));
+    return {
+        total, success, failed, prompt, completion, tokens, avg, p95,
+        successRate: total ? (success * 100 / total).toFixed(1) : '0',
+        topSlug: slugs[0]?.slug || '-',
+        slugs,
+    };
+}
+
+function renderUsageMetrics(summary) {
+    $('#usage-total').textContent = fmtNum(summary.total);
+    $('#usage-success-rate').textContent = `${summary.successRate}%`;
+    $('#usage-success-note').textContent = `${fmtNum(summary.success)} 成功`;
+    $('#usage-tokens').textContent = fmtNum(summary.tokens);
+    $('#usage-tokens-note').textContent = `prompt ${fmtNum(summary.prompt)} · output ${fmtNum(summary.completion)}`;
+    $('#usage-avg-duration').textContent = fmtMs(summary.avg);
+    $('#usage-p95-duration').textContent = `p95 ${fmtMs(summary.p95)}`;
+    $('#usage-top-slug').textContent = summary.topSlug;
+    $('#usage-failed').textContent = fmtNum(summary.failed);
+}
+
+function buildUsageTimeline(records) {
+    const buckets = new Map();
+    for (const r of records) {
+        const ts = parseUsageTs(r.ts);
+        if (!ts) continue;
+        const d = new Date(ts);
+        const key = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:00`;
+        const row = buckets.get(key) || { key, requests: 0, tokens: 0, duration: 0, count: 0 };
+        row.requests += 1;
+        row.tokens += Number(r.total_tokens || 0);
+        row.duration += Number(r.duration_ms || 0);
+        row.count += 1;
+        buckets.set(key, row);
+    }
+    return Array.from(buckets.values()).sort((a, b) => a.key.localeCompare(b.key)).slice(-24).map(row => ({
+        ...row,
+        avg: row.count ? Math.round(row.duration / row.count) : 0,
+    }));
+}
+
+function pointsFor(values, width, height, maxValue) {
+    if (!values.length) return '';
+    const max = maxValue || Math.max(...values, 1);
+    return values.map((v, i) => {
+        const x = values.length === 1 ? width : i * (width / (values.length - 1));
+        const y = height - ((v || 0) / max) * (height - 18) - 9;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+}
+
+function renderUsageTrend(records) {
+    const el = $('#usage-trend');
+    const data = buildUsageTimeline(records);
+    if (!data.length) {
+        el.innerHTML = '<div class="flex h-full min-h-[220px] items-center justify-center text-sm text-slate-400">暂无趋势数据</div>';
+        return;
+    }
+    const width = 760;
+    const height = 190;
+    const req = data.map(d => d.requests);
+    const tokens = data.map(d => d.tokens);
+    const avg = data.map(d => d.avg);
+    el.innerHTML = `
+        <svg viewBox="0 0 ${width} ${height}" class="h-[220px] w-full">
+            <polyline points="${pointsFor(req, width, height, Math.max(...req, 1))}" fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            <polyline points="${pointsFor(tokens, width, height, Math.max(...tokens, 1))}" fill="none" stroke="#0f766e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            <polyline points="${pointsFor(avg, width, height, Math.max(...avg, 1))}" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            <text x="8" y="22" fill="#64748b" font-size="12">${escapeHtml(data[0].key)}</text>
+            <text x="${width - 92}" y="${height - 12}" fill="#64748b" font-size="12">${escapeHtml(data[data.length - 1].key)}</text>
+        </svg>
+    `;
+}
+
+function renderUsageSlugBars(summary) {
+    const rows = summary.slugs.slice(0, 8);
+    const max = Math.max(...rows.map(r => r.tokens), 1);
+    $('#usage-slug-bars').innerHTML = rows.length ? rows.map(row => `
+        <div>
+            <div class="mb-1 flex items-center justify-between gap-3 text-xs">
+                <span class="font-semibold text-slate-700">${escapeHtml(row.slug)}</span>
+                <span class="font-mono text-slate-500">${fmtNum(row.tokens)} tokens · ${fmtNum(row.requests)} 次</span>
+            </div>
+            <div class="usage-bar-track"><div class="usage-bar-fill" style="width:${Math.max(4, row.tokens * 100 / max)}%"></div></div>
+        </div>
+    `).join('') : '<div class="rounded-3xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">暂无容器消耗数据</div>';
+}
+
+function renderUsageTable(records) {
+    $('#usage-table-count').textContent = `${records.length} / ${usageRecords.length} 条记录`;
+    $('#usage-meta').textContent = usageLoaded ? `最近加载 ${new Date().toLocaleTimeString()}` : '';
+    $('#usage-body').innerHTML = records.length ? records.slice(0, 500).map(r => {
+        const time = parseUsageTs(r.ts) ? new Date(parseUsageTs(r.ts)).toLocaleString('zh-CN', { hour12: false }) : (r.ts || '-');
+        const endpoint = r.endpoint || String(r.path || '').split('/').pop() || '-';
+        return `
+            <tr class="usage-row border-t border-slate-100" data-request-id="${escapeHtml(r.request_id || '')}">
+                <td class="py-3 pl-4 pr-3 font-mono text-xs text-slate-500">${escapeHtml(time)}</td>
+                <td class="px-3 py-3"><span class="model-chip">${escapeHtml(r.slug || '-')}</span></td>
+                <td class="px-3 py-3 font-mono text-xs text-slate-700">${escapeHtml(r.model || '-')}</td>
+                <td class="px-3 py-3 font-mono text-xs text-slate-600">${escapeHtml(endpoint)}</td>
+                <td class="px-3 py-3"><span class="usage-mode-pill ${r.stream ? '' : 'usage-mode-pill-normal'}">${r.stream ? (r.stream_compat ? 'stream compat' : 'stream') : 'normal'}</span></td>
+                <td class="px-3 py-3 font-mono text-xs">${escapeHtml(r.prompt_tokens ?? '-')}</td>
+                <td class="px-3 py-3 font-mono text-xs">${escapeHtml(r.completion_tokens ?? '-')}</td>
+                <td class="px-3 py-3 font-mono text-xs">${escapeHtml(r.total_tokens ?? '-')}</td>
+                <td class="px-3 py-3 font-mono text-xs">${fmtMs(r.duration_ms)}</td>
+                <td class="px-3 py-3"><span class="${r.ok ? 'usage-status-ok' : 'usage-status-error'}">${r.ok ? '成功' : `失败 ${escapeHtml(r.status || '')}`}</span></td>
+                <td class="py-3 pl-3 pr-4 max-w-sm truncate text-xs text-slate-500">${escapeHtml(r.error || '-')}</td>
+            </tr>
+        `;
+    }).join('') : '<tr><td colspan="11" class="px-4 py-12 text-center text-slate-400">暂无匹配的使用日志</td></tr>';
+    $$('#usage-body .usage-row').forEach(row => {
+        row.addEventListener('click', () => {
+            const rec = records.find(r => (r.request_id || '') === row.dataset.requestId);
+            if (rec) showUsageDetail(rec);
+        });
+    });
+}
+
+function renderUsage() {
+    const summary = summarizeUsage(usageFilteredRecords);
+    renderUsageMetrics(summary);
+    renderUsageTrend(usageFilteredRecords);
+    renderUsageSlugBars(summary);
+    renderUsageTable(usageFilteredRecords);
+}
+
+function showUsageDetail(r) {
+    const mode = r.stream ? (r.stream_compat ? 'stream compat' : 'stream') : 'normal';
+    const item = (label, value, wide = false) => `
+        <div class="${wide ? 'sm:col-span-2' : ''} rounded-2xl bg-slate-50 p-3">
+            <div class="mb-1 text-xs font-semibold text-slate-400">${escapeHtml(label)}</div>
+            <div class="break-all font-mono text-xs text-slate-700">${escapeHtml(value ?? '-')}</div>
+        </div>
+    `;
+    $('#usage-detail-body').innerHTML = [
+        item('Request ID', r.request_id, true),
+        item('时间', r.ts),
+        item('客户端 IP', r.ip),
+        item('容器', r.slug),
+        item('模型', r.model),
+        item('路径', r.path, true),
+        item('模式', mode),
+        item('状态', `${r.status || '-'} ${r.ok ? 'OK' : 'ERROR'}`),
+        item('Tokens', `${r.prompt_tokens ?? '-'} + ${r.completion_tokens ?? '-'} = ${r.total_tokens ?? '-'}`),
+        item('耗时', fmtMs(r.duration_ms)),
+        item('错误', r.error || '-', true),
+    ].join('');
+    $('#modal-usage-detail').classList.remove('hidden');
+    $('#modal-usage-detail').classList.add('flex');
+}
+
+async function loadUsage() {
+    $('#usage-body').innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-slate-400">加载中...</td></tr>';
+    try {
+        const d = await api('GET', '/api/usage?limit=5000');
+        usageRecords = d.records || [];
+        usageLoaded = true;
+        syncUsageFilterOptions();
+        applyUsageFilters();
+    } catch (e) {
+        $('#usage-body').innerHTML = `<tr><td colspan="11" class="px-4 py-8 text-center text-red-500">加载失败：${escapeHtml(e.message)}</td></tr>`;
+        toast('加载使用日志失败：' + e.message, true);
+    }
+}
+
+function exportUsageCsv() {
+    const headers = ['ts','request_id','ip','slug','model','path','stream','stream_compat','status','ok','prompt_tokens','completion_tokens','total_tokens','duration_ms','error'];
+    const lines = [headers.join(',')];
+    for (const r of usageFilteredRecords) {
+        lines.push(headers.map(h => {
+            const value = String(r[h] ?? '');
+            return `"${value.replace(/"/g, '""')}"`;
+        }).join(','));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `chat2api-usage-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
+['usage-range','usage-slug','usage-model','usage-endpoint','usage-ok','usage-stream'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', applyUsageFilters);
+});
+const usageSearch = $('#usage-search');
+if (usageSearch) usageSearch.addEventListener('input', applyUsageFilters);
+const usageRefresh = $('#btn-usage-refresh');
+if (usageRefresh) usageRefresh.addEventListener('click', loadUsage);
+const usageClear = $('#btn-usage-clear');
+if (usageClear) {
+    usageClear.addEventListener('click', () => {
+        $('#usage-range').value = '86400';
+        $('#usage-slug').value = '';
+        $('#usage-model').value = '';
+        $('#usage-endpoint').value = '';
+        $('#usage-ok').value = '';
+        $('#usage-stream').value = '';
+        $('#usage-search').value = '';
+        applyUsageFilters();
+    });
+}
+const usageExport = $('#btn-usage-export');
+if (usageExport) usageExport.addEventListener('click', exportUsageCsv);
+const usageDetailClose = $('#btn-close-usage-detail');
+if (usageDetailClose) {
+    usageDetailClose.addEventListener('click', () => {
+        $('#modal-usage-detail').classList.add('hidden');
+        $('#modal-usage-detail').classList.remove('flex');
+        $('#usage-detail-body').innerHTML = '';
+    });
+}
 
 // ---------- 调用信息 (单实例) ----------
 

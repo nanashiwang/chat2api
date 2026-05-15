@@ -22,6 +22,7 @@
             <button type="button" id="btn-summary" class="orch-nav-item"><span>☷</span><span>调用汇总</span></button>
             <button type="button" id="btn-playground" class="orch-nav-item"><span>▶</span><span>试调用</span></button>
             <button type="button" id="btn-unified-api" class="orch-nav-item"><span>◆</span><span>统一 API</span></button>
+            <button type="button" class="orch-nav-item" data-panel="usage"><span>◷</span><span>使用日志</span></button>
             <button type="button" id="btn-audit" class="orch-nav-item"><span>◴</span><span>审计日志</span></button>
             <button type="button" id="btn-diag-logs" class="orch-nav-item"><span>☰</span><span>诊断日志</span></button>
             <button type="button" id="btn-admin-center" class="orch-nav-item"><span>⚙</span><span>管理中心</span></button>
@@ -53,68 +54,207 @@
             </div>
         </header>
 
-        <section class="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-                <p class="text-sm font-medium text-blue-600">Account Instances</p>
-                <h2 class="orch-title mt-1 text-3xl tracking-tight">账号实例</h2>
-                <p class="mt-1 text-sm text-slate-500">集中查看实例健康、代理、Cookie 鲜度和模型可用性。</p>
-            </div>
-            <button id="btn-add" class="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20">+ 新增账号</button>
-        </section>
+        <div id="panel-instances" class="orch-panel" data-panel-body="instances">
+            <section class="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                    <p class="text-sm font-medium text-blue-600">Account Instances</p>
+                    <h2 class="orch-title mt-1 text-3xl tracking-tight">账号实例</h2>
+                    <p class="mt-1 text-sm text-slate-500">集中查看实例健康、代理、Cookie 鲜度和模型可用性。</p>
+                </div>
+                <button id="btn-add" class="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20">+ 新增账号</button>
+            </section>
 
-        <section class="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
-            <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">总实例数</div><div id="metric-total" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-slate-500">全部账号</div></div>
-            <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">健康实例</div><div id="metric-healthy" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-emerald-600">Healthy</div></div>
-            <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">异常实例</div><div id="metric-degraded" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-orange-600">需关注</div></div>
-            <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">代理绑定</div><div id="metric-proxy" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-slate-500">已配置出口</div></div>
-            <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">模型可用</div><div id="metric-models" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-slate-500">模型总数</div></div>
-            <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">Cookie 新鲜</div><div id="metric-cookie" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-slate-500">1 小时内</div></div>
-        </section>
+            <section class="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">总实例数</div><div id="metric-total" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-slate-500">全部账号</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">健康实例</div><div id="metric-healthy" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-emerald-600">Healthy</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">异常实例</div><div id="metric-degraded" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-orange-600">需关注</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">代理绑定</div><div id="metric-proxy" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-slate-500">已配置出口</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">模型可用</div><div id="metric-models" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-slate-500">模型总数</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">Cookie 新鲜</div><div id="metric-cookie" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-slate-500">1 小时内</div></div>
+            </section>
 
-        <section class="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_360px]">
-            <div class="glass-panel overflow-hidden rounded-3xl">
-                <div class="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
-                    <div>
-                        <h3 class="orch-section-title text-lg">实例列表</h3>
-                        <p id="table-count" class="mt-1 text-xs text-slate-500">--</p>
+            <section class="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_360px]">
+                <div class="glass-panel overflow-hidden rounded-3xl">
+                    <div class="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                            <h3 class="orch-section-title text-lg">实例列表</h3>
+                            <p id="table-count" class="mt-1 text-xs text-slate-500">--</p>
+                        </div>
+                        <div class="flex flex-wrap gap-2 text-xs font-semibold">
+                            <span class="rounded-xl bg-blue-50 px-3 py-2 text-blue-700">全部</span>
+                            <span class="rounded-xl bg-emerald-50 px-3 py-2 text-emerald-700">Healthy</span>
+                            <span class="rounded-xl bg-orange-50 px-3 py-2 text-orange-700">Degraded</span>
+                        </div>
                     </div>
-                    <div class="flex flex-wrap gap-2 text-xs font-semibold">
-                        <span class="rounded-xl bg-blue-50 px-3 py-2 text-blue-700">全部</span>
-                        <span class="rounded-xl bg-emerald-50 px-3 py-2 text-emerald-700">Healthy</span>
-                        <span class="rounded-xl bg-orange-50 px-3 py-2 text-orange-700">Degraded</span>
+                    <div class="overflow-x-auto">
+                        <table class="admin-table w-full min-w-[1100px] text-sm">
+                            <thead class="bg-slate-50/80">
+                                <tr class="text-left">
+                                    <th class="py-3 pl-4 pr-3">账号</th>
+                                    <th class="px-3 py-3">套餐/模型</th>
+                                    <th class="px-3 py-3">代理</th>
+                                    <th class="px-3 py-3">状态</th>
+                                    <th class="px-3 py-3">出口 IP</th>
+                                    <th class="px-3 py-3">Cookie</th>
+                                    <th class="px-3 py-3">运行时长</th>
+                                    <th class="py-3 pl-3 pr-4 text-right">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody">
+                                <tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">加载中...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
+
+                <aside id="instance-detail" class="glass-panel rounded-3xl p-4 2xl:sticky 2xl:top-28 2xl:self-start">
+                    <div class="mb-4 flex items-center justify-between">
+                        <h3 class="orch-detail-title text-base">实例详情</h3>
+                        <button id="btn-clear-detail" class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500">清空</button>
+                    </div>
+                    <div id="detail-empty" class="rounded-3xl border border-dashed border-slate-300 bg-white/70 p-8 text-center text-sm text-slate-500">点击左侧实例行查看详情。</div>
+                    <div id="detail-body" class="hidden"></div>
+                </aside>
+            </section>
+        </div>
+
+        <div id="panel-usage" class="orch-panel hidden" data-panel-body="usage">
+            <section class="mb-5 flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+                <div>
+                    <p class="text-sm font-medium text-blue-600">Usage Logs</p>
+                    <h2 class="orch-title mt-1 text-3xl tracking-tight">使用日志</h2>
+                    <p class="mt-1 text-sm text-slate-500">查看统一入口调用命中的容器、tokens、耗时和错误分布。</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    <button id="btn-usage-refresh" class="rounded-2xl bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-teal-700/20">刷新日志</button>
+                    <button id="btn-usage-export" class="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm">导出 CSV</button>
+                </div>
+            </section>
+
+            <section class="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">请求数</div><div id="usage-total" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-slate-500">当前筛选</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">成功率</div><div id="usage-success-rate" class="orch-metric-value mt-2 text-2xl">0%</div><div id="usage-success-note" class="mt-2 text-xs text-emerald-600">0 成功</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">总 Tokens</div><div id="usage-tokens" class="orch-metric-value mt-2 text-2xl">0</div><div id="usage-tokens-note" class="mt-2 text-xs text-slate-500">prompt 0 · output 0</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">平均耗时</div><div id="usage-avg-duration" class="orch-metric-value mt-2 text-2xl">0ms</div><div id="usage-p95-duration" class="mt-2 text-xs text-slate-500">p95 0ms</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">最常用容器</div><div id="usage-top-slug" class="orch-metric-value mt-2 text-2xl">-</div><div class="mt-2 text-xs text-slate-500">按请求数</div></div>
+                <div class="metric-card p-4"><div class="text-sm font-medium text-slate-500">失败请求</div><div id="usage-failed" class="orch-metric-value mt-2 text-2xl">0</div><div class="mt-2 text-xs text-orange-600">非 2xx / 异常</div></div>
+            </section>
+
+            <section class="glass-panel mb-5 rounded-3xl p-4">
+                <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_1fr_1fr_1.4fr_auto]">
+                    <div>
+                        <label class="mb-1 block text-xs font-semibold text-slate-500">时间范围</label>
+                        <select id="usage-range" class="usage-control">
+                            <option value="900">近 15 分钟</option>
+                            <option value="3600">近 1 小时</option>
+                            <option value="86400" selected>近 24 小时</option>
+                            <option value="604800">近 7 天</option>
+                            <option value="all">全部</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-semibold text-slate-500">容器</label>
+                        <select id="usage-slug" class="usage-control"><option value="">全部容器</option></select>
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-semibold text-slate-500">模型</label>
+                        <select id="usage-model" class="usage-control"><option value="">全部模型</option></select>
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-semibold text-slate-500">接口</label>
+                        <select id="usage-endpoint" class="usage-control"><option value="">全部接口</option></select>
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-semibold text-slate-500">状态</label>
+                        <select id="usage-ok" class="usage-control">
+                            <option value="">全部</option>
+                            <option value="true">成功</option>
+                            <option value="false">失败</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-semibold text-slate-500">模式</label>
+                        <select id="usage-stream" class="usage-control">
+                            <option value="">全部</option>
+                            <option value="true">stream</option>
+                            <option value="false">normal</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-semibold text-slate-500">搜索</label>
+                        <input id="usage-search" type="search" class="usage-control" placeholder="Request ID / 模型 / 容器 / 错误">
+                    </div>
+                    <div class="flex items-end">
+                        <button id="btn-usage-clear" class="h-10 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600">清空</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="mb-5 grid gap-4 2xl:grid-cols-[minmax(0,1.5fr)_minmax(360px,1fr)]">
+                <div class="glass-panel rounded-3xl p-4">
+                    <div class="mb-3 flex items-center justify-between">
+                        <h3 class="orch-section-title text-lg">请求量与 Tokens 趋势</h3>
+                        <div class="flex flex-wrap gap-3 text-xs text-slate-500">
+                            <span><i class="usage-dot bg-blue-600"></i>请求数</span>
+                            <span><i class="usage-dot bg-teal-600"></i>Tokens</span>
+                            <span><i class="usage-dot bg-amber-500"></i>平均耗时</span>
+                        </div>
+                    </div>
+                    <div id="usage-trend" class="usage-chart"></div>
+                </div>
+                <div class="glass-panel rounded-3xl p-4">
+                    <div class="mb-3 flex items-center justify-between">
+                        <h3 class="orch-section-title text-lg">容器消耗排行</h3>
+                        <span class="text-xs text-slate-500">按 total tokens</span>
+                    </div>
+                    <div id="usage-slug-bars" class="space-y-3"></div>
+                </div>
+            </section>
+
+            <section class="glass-panel overflow-hidden rounded-3xl">
+                <div class="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                        <h3 class="orch-section-title text-lg">调用明细</h3>
+                        <p id="usage-table-count" class="mt-1 text-xs text-slate-500">--</p>
+                    </div>
+                    <div id="usage-meta" class="text-xs text-slate-500"></div>
+                </div>
                 <div class="overflow-x-auto">
-                    <table class="admin-table w-full min-w-[1100px] text-sm">
+                    <table class="admin-table w-full min-w-[1180px] text-sm">
                         <thead class="bg-slate-50/80">
                             <tr class="text-left">
-                                <th class="py-3 pl-4 pr-3">账号</th>
-                                <th class="px-3 py-3">套餐/模型</th>
-                                <th class="px-3 py-3">代理</th>
+                                <th class="py-3 pl-4 pr-3">时间</th>
+                                <th class="px-3 py-3">容器</th>
+                                <th class="px-3 py-3">模型</th>
+                                <th class="px-3 py-3">接口</th>
+                                <th class="px-3 py-3">模式</th>
+                                <th class="px-3 py-3">Prompt</th>
+                                <th class="px-3 py-3">Completion</th>
+                                <th class="px-3 py-3">Total</th>
+                                <th class="px-3 py-3">耗时</th>
                                 <th class="px-3 py-3">状态</th>
-                                <th class="px-3 py-3">出口 IP</th>
-                                <th class="px-3 py-3">Cookie</th>
-                                <th class="px-3 py-3">运行时长</th>
-                                <th class="py-3 pl-3 pr-4 text-right">操作</th>
+                                <th class="py-3 pl-3 pr-4">错误</th>
                             </tr>
                         </thead>
-                        <tbody id="tbody">
-                            <tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">加载中...</td></tr>
+                        <tbody id="usage-body">
+                            <tr><td colspan="11" class="px-4 py-8 text-center text-slate-400">尚未加载</td></tr>
                         </tbody>
                     </table>
                 </div>
-            </div>
-
-            <aside id="instance-detail" class="glass-panel rounded-3xl p-4 2xl:sticky 2xl:top-28 2xl:self-start">
-                <div class="mb-4 flex items-center justify-between">
-                    <h3 class="orch-detail-title text-base">实例详情</h3>
-                    <button id="btn-clear-detail" class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500">清空</button>
-                </div>
-                <div id="detail-empty" class="rounded-3xl border border-dashed border-slate-300 bg-white/70 p-8 text-center text-sm text-slate-500">点击左侧实例行查看详情。</div>
-                <div id="detail-body" class="hidden"></div>
-            </aside>
-        </section>
+            </section>
+        </div>
     </main>
+</div>
+
+<!-- 模态：使用日志详情 -->
+<div id="modal-usage-detail" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6">
+        <div class="mb-4 flex items-center justify-between">
+            <h3 class="text-lg font-semibold">请求详情</h3>
+            <button id="btn-close-usage-detail" class="text-gray-400 hover:text-gray-600">×</button>
+        </div>
+        <div id="usage-detail-body" class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2"></div>
+    </div>
 </div>
 
 <!-- 模态：新增/编辑 -->

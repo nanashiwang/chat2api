@@ -95,6 +95,88 @@ body {
     border-radius: 9999px;
     line-height: 1.2;
 }
+.usage-control {
+    width: 100%;
+    height: 2.5rem;
+    border-radius: 1rem;
+    border: 1px solid #dbe4ef;
+    background: rgba(255, 255, 255, 0.92);
+    padding: 0 0.85rem;
+    font-size: 0.875rem;
+    color: var(--text-body);
+    outline: none;
+}
+.usage-control:focus {
+    border-color: #93c5fd;
+    box-shadow: 0 0 0 4px rgba(147, 197, 253, 0.28);
+}
+.usage-dot {
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 999px;
+    margin-right: 0.35rem;
+}
+.usage-chart {
+    min-height: 220px;
+    border-radius: 1.5rem;
+    background:
+        linear-gradient(to bottom, transparent 0 24%, rgba(203, 213, 225, 0.55) 24% 25%, transparent 25% 49%, rgba(203, 213, 225, 0.55) 49% 50%, transparent 50% 74%, rgba(203, 213, 225, 0.55) 74% 75%, transparent 75% 100%),
+        linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255,255,255,0.92));
+    border: 1px solid #e2e8f0;
+    overflow: hidden;
+}
+.usage-bar-track {
+    height: 0.55rem;
+    border-radius: 999px;
+    background: #edf2f7;
+    overflow: hidden;
+}
+.usage-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #2563eb, #14b8a6);
+}
+.usage-row {
+    cursor: pointer;
+}
+.usage-row:hover {
+    background: #f8fbff;
+}
+.usage-status-ok {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: #dcfce7;
+    color: #047857;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+.usage-status-error {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: #fee2e2;
+    color: #b91c1c;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+.usage-mode-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: #e0f2fe;
+    color: #0369a1;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+.usage-mode-pill-normal {
+    background: #f1f5f9;
+    color: #475569;
+}
 .orch-title,
 .orch-section-title,
 .orch-metric-value,

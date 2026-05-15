@@ -61,6 +61,7 @@ SECRETS_FILE = WORK / "generated" / "secrets.txt"
 ORCH_ENV = WORK / "generated" / "orch.env"
 DATA_DIR = WORK / "data"
 AUDIT_FILE = WORK / "audit.jsonl"
+USAGE_FILE = WORK / "usage.jsonl"
 
 USERNAME = (os.environ.get("ORCH_USERNAME") or "admin").strip() or "admin"
 PASSWORD = (os.environ.get("ORCH_PASSWORD") or "").strip()
@@ -402,6 +403,172 @@ HOP_BY_HOP_HEADERS = {
 }
 
 
+def _client_ip(request: Request) -> str:
+    xff = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+    return xff or (request.client.host if request.client else "?")
+
+
+def _usage_from_body(data: Any) -> dict[str, int | None]:
+    usage = data.get("usage") if isinstance(data, dict) else {}
+    if not isinstance(usage, dict):
+        usage = {}
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    total = usage.get("total_tokens")
+    if prompt is None:
+        prompt = usage.get("input_tokens")
+    if completion is None:
+        completion = usage.get("output_tokens")
+    if total is None and prompt is not None and completion is not None:
+        try:
+            total = int(prompt) + int(completion)
+        except (TypeError, ValueError):
+            total = None
+
+    def as_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "prompt_tokens": as_int(prompt),
+        "completion_tokens": as_int(completion),
+        "total_tokens": as_int(total),
+    }
+
+
+def _write_usage(record: dict[str, Any]) -> None:
+    try:
+        with USAGE_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as e:
+        logger.error("usage write failed: %s", e)
+
+
+def _record_usage(
+    request: Request,
+    *,
+    slug: str,
+    path: str,
+    model: str,
+    stream: bool,
+    status_code: int,
+    duration_ms: int,
+    ok: bool,
+    request_id: str,
+    usage: dict[str, int | None] | None = None,
+    error: str = "",
+    stream_compat: bool = False,
+) -> None:
+    token_usage = usage or {}
+    _write_usage({
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "request_id": request_id,
+        "ip": _client_ip(request),
+        "slug": slug,
+        "path": path,
+        "endpoint": path.rsplit("/", 1)[-1] if path else "",
+        "model": model,
+        "stream": stream,
+        "stream_compat": stream_compat,
+        "status": status_code,
+        "ok": ok,
+        "prompt_tokens": token_usage.get("prompt_tokens"),
+        "completion_tokens": token_usage.get("completion_tokens"),
+        "total_tokens": token_usage.get("total_tokens"),
+        "duration_ms": duration_ms,
+        "error": error[:300],
+    })
+
+
+def read_usage(limit: int = 200) -> list[dict[str, Any]]:
+    if not USAGE_FILE.exists():
+        return []
+    lines = USAGE_FILE.read_text(encoding="utf-8").splitlines()
+    out: list[dict[str, Any]] = []
+    for line in reversed(lines[-limit * 3:]):
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+        if len(out) >= limit:
+            break
+    return out
+
+
+def usage_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    total_requests = len(records)
+    success = sum(1 for r in records if r.get("ok"))
+    failed = total_requests - success
+    total_tokens = sum(int(r.get("total_tokens") or 0) for r in records)
+    prompt_tokens = sum(int(r.get("prompt_tokens") or 0) for r in records)
+    completion_tokens = sum(int(r.get("completion_tokens") or 0) for r in records)
+    durations = [int(r.get("duration_ms") or 0) for r in records if r.get("duration_ms") is not None]
+    avg_duration_ms = round(sum(durations) / len(durations)) if durations else 0
+    sorted_durations = sorted(durations)
+    p95_index = max(0, min(len(sorted_durations) - 1, int((len(sorted_durations) - 1) * 0.95))) if sorted_durations else 0
+    p95_duration_ms = sorted_durations[p95_index] if sorted_durations else 0
+    by_slug: dict[str, dict[str, Any]] = {}
+    by_model: dict[str, int] = {}
+    by_endpoint: dict[str, int] = {}
+    by_hour: dict[str, dict[str, int]] = {}
+    for r in records:
+        slug = str(r.get("slug") or "-")
+        slug_row = by_slug.setdefault(slug, {"slug": slug, "requests": 0, "tokens": 0, "errors": 0})
+        slug_row["requests"] += 1
+        slug_row["tokens"] += int(r.get("total_tokens") or 0)
+        if not r.get("ok"):
+            slug_row["errors"] += 1
+        model = str(r.get("model") or "-")
+        by_model[model] = by_model.get(model, 0) + 1
+        endpoint = str(r.get("endpoint") or "-")
+        by_endpoint[endpoint] = by_endpoint.get(endpoint, 0) + 1
+        hour = str(r.get("ts") or "")[:13]
+        if hour:
+            hour_row = by_hour.setdefault(hour, {"requests": 0, "tokens": 0, "duration_ms": 0, "duration_count": 0})
+            hour_row["requests"] += 1
+            hour_row["tokens"] += int(r.get("total_tokens") or 0)
+            if r.get("duration_ms") is not None:
+                hour_row["duration_ms"] += int(r.get("duration_ms") or 0)
+                hour_row["duration_count"] += 1
+    busiest = sorted(by_slug.values(), key=lambda x: (x["requests"], x["tokens"]), reverse=True)
+    return {
+        "total_requests": total_requests,
+        "success": success,
+        "failed": failed,
+        "success_rate": round(success * 100 / total_requests, 1) if total_requests else 0,
+        "total_tokens": total_tokens,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "avg_duration_ms": avg_duration_ms,
+        "p95_duration_ms": p95_duration_ms,
+        "top_slug": busiest[0]["slug"] if busiest else "-",
+        "by_slug": busiest,
+        "by_model": sorted(
+            [{"model": k, "requests": v} for k, v in by_model.items()],
+            key=lambda x: x["requests"],
+            reverse=True,
+        ),
+        "by_endpoint": sorted(
+            [{"endpoint": k, "requests": v} for k, v in by_endpoint.items()],
+            key=lambda x: x["requests"],
+            reverse=True,
+        ),
+        "timeline": [
+            {
+                "hour": hour,
+                "requests": row["requests"],
+                "tokens": row["tokens"],
+                "avg_duration_ms": round(row["duration_ms"] / row["duration_count"]) if row["duration_count"] else 0,
+            }
+            for hour, row in sorted(by_hour.items())
+        ][-24:],
+    }
+
+
 async def _close_upstream(resp: httpx.Response, client: httpx.AsyncClient) -> None:
     await resp.aclose()
     await client.aclose()
@@ -412,6 +579,10 @@ async def _forward_unified_request(
     backend: dict[str, str],
     path: str,
     body: bytes,
+    body_json: dict[str, Any],
+    model: str,
+    request_id: str,
+    started: float,
 ) -> StreamingResponse:
     upstream_path = f"/{backend['api_prefix']}/v1/{path.lstrip('/')}"
     url = f"http://c2a-{backend['slug']}:5005{upstream_path}"
@@ -439,6 +610,7 @@ async def _forward_unified_request(
     except Exception:
         await client.aclose()
         raise
+    duration_ms = int((time.perf_counter() - started) * 1000)
 
     response_headers = {
         k: v
@@ -447,6 +619,48 @@ async def _forward_unified_request(
         and k.lower() not in {"content-length", "content-encoding"}
     }
     response_headers["X-Chat2API-Upstream-Slug"] = backend["slug"]
+    content_type = resp.headers.get("content-type", "")
+    is_stream = _is_truthy(body_json.get("stream")) or content_type.startswith("text/event-stream")
+    if not is_stream and content_type.startswith("application/json"):
+        raw = await resp.aread()
+        parsed: Any = {}
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            parsed = {}
+        _record_usage(
+            request,
+            slug=backend["slug"],
+            path=f"/v1/{path}",
+            model=model,
+            stream=False,
+            status_code=resp.status_code,
+            duration_ms=duration_ms,
+            ok=200 <= resp.status_code < 400,
+            request_id=request_id,
+            usage=_usage_from_body(parsed),
+            error="" if 200 <= resp.status_code < 400 else str(parsed)[:300],
+        )
+        await resp.aclose()
+        await client.aclose()
+        return StreamingResponse(
+            iter([raw]),
+            status_code=resp.status_code,
+            headers=response_headers,
+            media_type=content_type or None,
+        )
+    _record_usage(
+        request,
+        slug=backend["slug"],
+        path=f"/v1/{path}",
+        model=model,
+        stream=is_stream,
+        status_code=resp.status_code,
+        duration_ms=duration_ms,
+        ok=200 <= resp.status_code < 400,
+        request_id=request_id,
+        error="" if 200 <= resp.status_code < 400 else f"HTTP {resp.status_code}",
+    )
     return StreamingResponse(
         resp.aiter_raw(),
         status_code=resp.status_code,
@@ -509,6 +723,8 @@ async def _forward_unified_stream_compat(
     path: str,
     body_json: dict[str, Any],
     model: str,
+    request_id: str,
+    started: float,
 ) -> StreamingResponse:
     compat_body = {**body_json, "stream": False}
     upstream_path = f"/{backend['api_prefix']}/v1/{path.lstrip('/')}"
@@ -531,6 +747,20 @@ async def _forward_unified_stream_compat(
         resp = await client.post(url, headers=headers, content=content)
         resp.raise_for_status()
         data = resp.json()
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    _record_usage(
+        request,
+        slug=backend["slug"],
+        path=f"/v1/{path}",
+        model=model,
+        stream=True,
+        status_code=resp.status_code,
+        duration_ms=duration_ms,
+        ok=True,
+        request_id=request_id,
+        usage=_usage_from_body(data),
+        stream_compat=True,
+    )
 
     async def event_generator():
         for event in _as_openai_stream_events(data, model):
@@ -763,11 +993,13 @@ async def unified_proxy(path: str, request: Request) -> Response:
     last_error = ""
     stream_compat = path.lstrip("/") == "chat/completions" and _is_truthy(body_json.get("stream"))
     for backend in _ordered_backends(candidates, affinity):
+        request_id = request.headers.get("x-request-id") or f"orch-{int(time.time() * 1000)}-{pysecrets.token_hex(4)}"
+        started = time.perf_counter()
         try:
             if stream_compat:
-                resp = await _forward_unified_stream_compat(request, backend, path, body_json, model)
+                resp = await _forward_unified_stream_compat(request, backend, path, body_json, model, request_id, started)
             else:
-                resp = await _forward_unified_request(request, backend, path, body)
+                resp = await _forward_unified_request(request, backend, path, body, body_json, model, request_id, started)
             audit(
                 "unified_proxy",
                 request,
@@ -781,6 +1013,20 @@ async def unified_proxy(path: str, request: Request) -> Response:
             return resp
         except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as e:
             last_error = str(e)[:200]
+            status_code = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else 502
+            _record_usage(
+                request,
+                slug=backend["slug"],
+                path=f"/v1/{path}",
+                model=model or "",
+                stream=_is_truthy(body_json.get("stream")),
+                status_code=status_code,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                ok=False,
+                request_id=request_id,
+                error=last_error,
+                stream_compat=stream_compat,
+            )
             audit(
                 "unified_proxy",
                 request,
@@ -1209,6 +1455,15 @@ async def api_reveal_secret(slug: str, request: Request) -> JSONResponse:
 @app.get("/api/audit", dependencies=[Depends(require_session)])
 async def api_audit(limit: int = Query(200, ge=1, le=2000)) -> JSONResponse:
     return JSONResponse({"records": read_audit(limit)})
+
+
+@app.get(
+    "/api/usage",
+    dependencies=[Depends(require_session), Depends(require_csrf)],
+)
+async def api_usage(limit: int = Query(500, ge=1, le=5000)) -> JSONResponse:
+    records = read_usage(limit)
+    return JSONResponse({"summary": usage_summary(records), "records": records})
 
 
 @app.get(
