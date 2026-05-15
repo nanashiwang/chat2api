@@ -39,6 +39,21 @@ def _infer_arch(platform_str):
     return '"x86"'
 
 
+def _infer_form_factors(device_str):
+    """根据 ua_generator 返回的 device 类型推断 sec-ch-ua-form-factors 值。
+
+    Chrome 124+ 在 same-origin 请求中默认携带，未携带会被识别为非主流客户端。
+    返回 CH 字符串形式（双引号包裹的列表字面量）。
+    """
+    d = (device_str or "").lower()
+    if d == "mobile":
+        return '"Mobile"'
+    if d == "tablet":
+        return '"Tablet"'
+    # 桌面：极少数 2-in-1 设备会上报 "Desktop", "Tablet"，但绝大多数仅 "Desktop"
+    return '"Desktop"'
+
+
 def _extract_full_version(ua_text, brands_full):
     """从 UA 或 brands_full_version_list 中提取 Chrome 完整版本号，如 "146.0.7680.121"。"""
     try:
@@ -61,6 +76,37 @@ def _extract_full_version(ua_text, brands_full):
     except Exception:
         pass
     return None
+
+
+def _extract_chrome_major(ua_text):
+    """从 UA 中解析 Chrome 主版本号；解析失败返回 None。"""
+    ua = (ua_text or "").lower()
+    try:
+        if "edg/" in ua:
+            return int(ua.split("edg/")[1].split(".")[0])
+        if "chrome/" in ua:
+            return int(ua.split("chrome/")[1].split(".")[0])
+    except (IndexError, ValueError):
+        return None
+    return None
+
+
+def _clamp_ua_to_supported(ua_text):
+    """若 UA Chrome 主版本超过 MAX_SUPPORTED_CHROME_MAJOR，按上限重写 UA。
+
+    避免 UA=Chrome 130 但 curl_cffi TLS=chrome124 的 6 版本错配。
+    返回 (clamped_ua, was_clamped)。
+    """
+    if not ua_text:
+        return ua_text, False
+    major = _extract_chrome_major(ua_text)
+    if major is None or major <= MAX_SUPPORTED_CHROME_MAJOR:
+        return ua_text, False
+    import re as _re
+    # 替换 Chrome/X.Y.Z.W 与可能存在的 Edg/X.Y.Z.W 主版本号
+    replaced = _re.sub(r"(Chrome/)(\d+)", lambda m: m.group(1) + str(MAX_SUPPORTED_CHROME_MAJOR), ua_text)
+    replaced = _re.sub(r"(Edg/)(\d+)", lambda m: m.group(1) + str(MAX_SUPPORTED_CHROME_MAJOR), replaced)
+    return replaced, True
 
 
 def select_impersonate(user_agent):
@@ -128,6 +174,10 @@ def get_fp(req_token):
         if "sec-ch-ua-platform" in fp and "sec-ch-ua-arch" not in fp:
             fp["sec-ch-ua-arch"] = _infer_arch(fp.get("sec-ch-ua-platform"))
             _migrated = True
+        # 老 fp 缺 form-factors → 桌面默认 "Desktop"
+        if "sec-ch-ua-platform" in fp and "sec-ch-ua-form-factors" not in fp:
+            fp["sec-ch-ua-form-factors"] = '"Desktop"'
+            _migrated = True
         # 老 fp 缺少完整高熵 CH 头时，仅打提示日志（不强制重生，避免破坏 strict_ip_binding 画像）
         # 用户可手动删除 data/fp_map.json 让新账号走完整生成流程
         if "sec-ch-ua-platform" in fp and "sec-ch-ua-full-version-list" not in fp:
@@ -145,7 +195,17 @@ def get_fp(req_token):
                 and configs.user_agents_list
                 and "user-agent" in fp.keys()
                 and fp["user-agent"] not in configs.user_agents_list):
-            fp["user-agent"] = random.choice(configs.user_agents_list)
+            picked_ua = random.choice(configs.user_agents_list)
+            # H4: 用户配置的 UA 若主版本号超过 curl_cffi 支持上限，自动降级避免 TLS/UA 错配
+            picked_ua, clamped = _clamp_ua_to_supported(picked_ua)
+            if clamped:
+                from utils.Logger import logger as _logger
+                _logger.warning(
+                    f"[fp] UA Chrome major > {MAX_SUPPORTED_CHROME_MAJOR}, "
+                    f"clamped to avoid TLS mismatch"
+                )
+            fp["user-agent"] = picked_ua
+            fp["impersonate"] = select_impersonate(picked_ua)
             globals.fp_map[req_token] = fp
             with open(globals.FP_FILE, "w", encoding="utf-8") as f:
                 json.dump(globals.fp_map, f, indent=4)
@@ -194,6 +254,9 @@ def get_fp(req_token):
                 fp["sec-ch-ua-platform-version"] = _stringify_ch_value(platform_version)
             # arch 需手动推断（ua_generator 不直接提供）
             fp["sec-ch-ua-arch"] = _infer_arch(fp.get("sec-ch-ua-platform"))
+            # D1: sec-ch-ua-form-factors（Chrome 124+ 默认携带；桌面恒为 "Desktop"）
+            # 真实浏览器返回数组形式："Desktop"，移动端 "Mobile"，二合一 "Desktop", "Tablet"
+            fp["sec-ch-ua-form-factors"] = _infer_form_factors(ua.device)
 
         if not req_token:
             return fp

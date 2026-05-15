@@ -27,7 +27,7 @@ from utils.retry import async_retry
 
 
 IMAGE_MARKDOWN_RE = re.compile(r"!\[(?:image|File\s*\d+)\]\(([^)]+)\)", re.IGNORECASE)
-DEFAULT_CHAT_MODEL = "gpt-4o"
+DEFAULT_CHAT_MODEL = "gpt-5-5"
 MAX_CONCURRENT_IMAGES = 4
 MAX_IMAGES_PER_REQUEST = 10
 IMAGE_DOWNLOAD_TIMEOUT = 30
@@ -58,7 +58,7 @@ def _extract_image_urls(content):
 
 
 async def _resolve_target_model(req_token, requested_model):
-    """动态选 model：探测上游可用列表，命中即用，否则 fallback gpt-4o。
+    """动态选 model：探测上游可用列表，命中即用，否则 fallback gpt-5-5。
 
     使用临时 ChatService 实例只做模型探测，用完即关闭，与后续图片生成调用不共享。
     """
@@ -70,7 +70,7 @@ async def _resolve_target_model(req_token, requested_model):
         if requested_model and requested_model in slugs:
             return requested_model
     except Exception as e:
-        logger.warning(f"[image_gen] resolve_target_model failed, fallback gpt-4o: {e}")
+        logger.warning(f"[image_gen] resolve_target_model failed, fallback gpt-5-5: {e}")
     finally:
         try:
             await probe.close_client()

@@ -481,7 +481,7 @@ async function showSecret(slug) {
                 </div>
                 <div>
                     <div class="text-xs text-gray-500 mb-1">② API 调用示例</div>
-                    <code class="bg-gray-100 px-1 block break-all text-xs">curl ${escapeHtml(apiUrl)} -H "Authorization: Bearer ${escapeHtml(d.AUTHORIZATION)}" -H "Content-Type: application/json" -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'</code>
+                    <code class="bg-gray-100 px-1 block break-all text-xs">curl ${escapeHtml(apiUrl)} -H "Authorization: Bearer ${escapeHtml(d.AUTHORIZATION)}" -H "Content-Type: application/json" -d '{"model":"gpt-5-5","messages":[{"role":"user","content":"hi"}]}'</code>
                 </div>
             </div>
         `;
@@ -517,12 +517,12 @@ async function showUnifiedApi() {
 `curl ${chatUrl} \\
   -H "Authorization: Bearer ${d.api_key}" \\
   -H "Content-Type: application/json" \\
-  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"gpt-5-5","messages":[{"role":"user","content":"你好"}]}'
 
 curl ${responsesUrl} \\
   -H "Authorization: Bearer ${d.api_key}" \\
   -H "Content-Type: application/json" \\
-  -d '{"model":"gpt-4o-mini","input":"你好"}'`;
+  -d '{"model":"gpt-5-5","input":"你好"}'`;
         $('#unified-strategy').textContent = d.strategy || '';
         $('#modal-unified-api').classList.remove('hidden');
         $('#modal-unified-api').classList.add('flex');
@@ -981,7 +981,7 @@ function absoluteBaseUrl(rawBaseUrl) {
 function genSnippets(baseUrl, apiKey, model) {
     const url = (baseUrl || '').replace(/\/$/, '');
     const k = apiKey || 'YOUR_API_KEY';
-    const m = model || 'gpt-4o-mini';
+    const m = model || 'gpt-5-5';
     return {
         curl: `curl ${url}/chat/completions \\
   -H "Content-Type: application/json" \\
@@ -1073,7 +1073,7 @@ function renderModelChips(models, sourceHint) {
 function renderInvokeSnippet() {
     if (!invokeCurrent) return;
     const baseUrl = absoluteBaseUrl(invokeCurrent.base_url);
-    const firstModel = (invokeCurrent.models && invokeCurrent.models[0] && invokeCurrent.models[0].id) || 'gpt-4o-mini';
+    const firstModel = (invokeCurrent.models && invokeCurrent.models[0] && invokeCurrent.models[0].id) || 'gpt-5-5';
     // 注意：因为后端没下发原文 auth，前端代码示例里只能填 masked key。提示用户从「凭证」按钮取原文。
     const apiKey = invokeCurrent.auth_masked || 'YOUR_API_KEY';
     const snippets = genSnippets(baseUrl, apiKey, firstModel);

@@ -8,6 +8,11 @@ model_proxy = {
     "gpt-4-turbo": "gpt-4-turbo-2024-04-09",
     "gpt-4o": "gpt-4o-2024-08-06",
     "gpt-4o-mini": "gpt-4o-mini-2024-07-18",
+    "gpt-5": "gpt-5",
+    "gpt-5-mini": "gpt-5-mini",
+    "gpt-5-thinking": "gpt-5-thinking",
+    "gpt-5-pro": "gpt-5-pro",
+    "gpt-5-5": "gpt-5-5",
     "o1-preview": "o1-preview-2024-09-12",
     "o1-mini": "o1-mini-2024-09-12",
     "o1": "o1-2024-12-18",
@@ -48,6 +53,11 @@ MODEL_REQUEST_RULES = (
     ("o1-pro", "o1-pro"),
     ("o1-mini", "o1-mini"),
     ("o1", "o1"),
+    ("gpt-5-5", "gpt-5-5"),
+    ("gpt-5-pro", "gpt-5-pro"),
+    ("gpt-5-thinking", "gpt-5-thinking"),
+    ("gpt-5-mini", "gpt-5-mini"),
+    ("gpt-5", "gpt-5"),
     ("gpt-4.5o", "gpt-4.5o"),
     ("gpt-4o-canmore", "gpt-4o-canmore"),
     ("gpt-4o-mini", "gpt-4o-mini"),
@@ -97,7 +107,7 @@ def match_model_family(origin_model, alias):
 
 
 def resolve_request_model(origin_model):
-    origin_model = (origin_model or "gpt-3.5-turbo-0125").strip()
+    origin_model = (origin_model or "gpt-5-5").strip()
     base_model = origin_model
     gizmo_id = None
 
@@ -106,7 +116,7 @@ def resolve_request_model(origin_model):
         gizmo_id = gizmo_suffix
     elif origin_model.startswith("g-"):
         gizmo_id = origin_model
-        base_model = "gpt-4o"
+        base_model = "gpt-5-5"
 
     for alias, target in MODEL_REQUEST_RULES:
         if match_model_family(base_model, alias):

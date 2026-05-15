@@ -103,7 +103,7 @@ endpoints:
         librechat_conversation_id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
         librechat_user_id: "{{LIBRECHAT_USER_ID}}"
       models:
-        default: ["gpt-4o", "gpt-4o-mini", "o1-preview", "o3-mini"]
+        default: ["gpt-5-5", "gpt-5", "gpt-4o", "gpt-4o-mini", "o1-preview", "o3-mini"]
 ```
 
 #### 2. New-API Channel Affinity（后台 UI 配置）
@@ -221,7 +221,7 @@ chat2api migrate rollback ~/chat2api.backup-YYYYMMDD-HHMMSS
 ### OpenAI 兼容接口
 
 - 流式 / 非流式响应
-- 模型支持：免登录 `GPT-3.5`、`GPT-4 / 4o / 4o-mini`、`o1 / o1-mini / o1-preview / o1-pro`、`o3-mini / o3-mini-high`
+- 模型支持：免登录 `GPT-3.5`、`GPT-4 / 4o / 4o-mini`、`GPT-5 / 5-mini / 5-thinking / 5-pro / 5-5`、`o1 / o1-mini / o1-preview / o1-pro`、`o3-mini / o3-mini-high`
 - GPTs（`gpt-4-gizmo-g-*`）/ Team / Plus 账号 / 文件 / 图片 / 联网 / 画图
 - AccessToken / RefreshToken / SessionToken（`rt_*` 新格式）多 Tokens 轮询 + 失败自动重试
 - O3 / O1 系列推理过程输出
@@ -252,7 +252,7 @@ curl --location 'http://127.0.0.1:5005/${API_PREFIX}/v1/chat/completions' \
   --header 'Content-Type: application/json' \
   --header 'Authorization: Bearer {{Token}}' \
   --data '{
-    "model": "gpt-4o",
+    "model": "gpt-5-5",
     "messages": [{"role": "user", "content": "Say this is a test!"}],
     "stream": true
   }'
@@ -298,7 +298,7 @@ curl -N 'http://127.0.0.1:5005/${API_PREFIX}/v1/chat/completions' \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer {{Token}}' \
   -d '{
-    "model": "gpt-4o",
+    "model": "gpt-5-5",
     "system_hints": ["research"],
     "stream": true,
     "messages": [{"role":"user","content":"对比主流 LLM 推理引擎的吞吐量与成本"}]
@@ -417,8 +417,6 @@ curl -fsSL https://raw.githubusercontent.com/nanashiwang/chat2api/main/deploy/do
 # 创建 .env 写入 ADMIN_PASSWORD / AUTHORIZATION / API_PREFIX
 docker compose up -d
 ```
-
-> ⚠️ **不要使用** `docker-compose-warp.yml`：所有账号共用一个 WARP 出口 IP，多账号同 IP 是高危风控信号。请用一容器一账号 + 独立住宅代理（[多实例编排](#多实例一容器一账号)）。
 
 ### chat2api CLI 命令
 

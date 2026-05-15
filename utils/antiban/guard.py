@@ -45,6 +45,14 @@ async def init() -> None:
         f"accounts={stats['account_total']} healthy={stats['healthy']} degraded={stats.get('degraded', 0)}"
     )
 
+    # D4: 后台异步探测 oai-client-version 是否过旧（不阻塞启动）
+    try:
+        import asyncio
+        from utils.antiban import version_check
+        asyncio.create_task(version_check.probe_and_compare())
+    except Exception as e:
+        logger.info(f"[antiban] version_check schedule failed: {e}")
+
 
 async def acquire_context(req_token: Optional[str]) -> AntibanContext:
     """在 ChatService.initialize_request_context() 中调用。
@@ -90,11 +98,19 @@ async def report_error(ctx: AntibanContext, status_code: int, detail: Any = None
     circuit.handle_response_error(ctx.token, ctx.bucket_id, status_code, detail)
 
 
+async def report_network_error(ctx: AntibanContext, error_kind: str = "") -> None:
+    """M3: transport 层失败（ConnectionError/超时/DNS）→ 累计后降级桶。"""
+    if not ctx.enabled:
+        return
+    circuit.handle_network_error(ctx.token, ctx.bucket_id, error_kind)
+
+
 async def report_success(ctx: AntibanContext) -> None:
     if not ctx.enabled:
         return
     cooldown.record_request(ctx.token)
     circuit.handle_response_success(ctx.token)
+    circuit.reset_network_errors(ctx.bucket_id)
     bucket.mark_used(ctx.token)
 
 

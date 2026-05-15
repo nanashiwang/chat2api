@@ -82,7 +82,7 @@ class ModelMixin:
             raise self.model_not_found()
 
     async def set_model(self):
-        self.origin_model = self.data.get("model", "gpt-3.5-turbo-0125")
+        self.origin_model = self.data.get("model", "gpt-5-5")
         self.resp_model = get_response_model(self.origin_model)
         self.req_model, self.gizmo_id, self.dynamic_model = resolve_request_model(self.origin_model)
 

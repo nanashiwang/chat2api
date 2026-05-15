@@ -121,8 +121,26 @@ class ChatService(AuthMixin, ModelMixin, FileMixin):
         session_id_header = self.fp.get("oai-session-id")
         if session_id_header:
             self.base_headers['oai-session-id'] = session_id_header
+        # T1: 注入用户偏好相关 CH 头（Chromium 真实浏览器在 same-origin 请求中默认携带）
+        _pref_color = self.fp.get("color_scheme")
+        if _pref_color in ("light", "dark"):
+            self.base_headers['sec-ch-prefers-color-scheme'] = _pref_color
+        _pref_motion = self.fp.get("prefers_reduced_motion")
+        if _pref_motion in ("no-preference", "reduce"):
+            self.base_headers['sec-ch-prefers-reduced-motion'] = _pref_motion
         # 过滤掉 fp 中的非 HTTP-header 内部指纹字段（screen/viewport 等仅供 PoW 与 contextual_info 使用）
-        for _internal_key in ("screen", "hardware_concurrency", "device_memory", "pixel_ratio", "viewport"):
+        for _internal_key in (
+            "screen", "hardware_concurrency", "device_memory", "pixel_ratio", "viewport",
+            # 扩展指纹字段：仅供 client_contextual_info / 未来 sentinel 字段使用，绝不能进 HTTP 头
+            "nav_platform", "languages", "max_touch_points", "webgl",
+            "color_scheme", "prefers_reduced_motion", "color_gamut",
+            "connection", "audio",
+            # T2/T3/T5/M1/M2 等纯指纹字段
+            "canvas_hash", "font_list_hash", "font_list_count", "audio_fp_hash",
+            "timezone", "intl_locale", "user_pace", "virtual_page_load_ms",
+            # D2/D3 深耕字段
+            "webgpu", "webrtc",
+        ):
             self.fp.pop(_internal_key, None)
         self.base_headers.update(_sanitize_headers(self.fp))
 
@@ -280,6 +298,11 @@ class ChatService(AuthMixin, ModelMixin, FileMixin):
         except HTTPException as e:
             raise HTTPException(status_code=e.status_code, detail=e.detail)
         except Exception as e:
+            # M3: transport 层失败（连接被拒/超时/DNS）→ 告知 antiban 桶降级
+            try:
+                await antiban.report_network_error(self.antiban_ctx, type(e).__name__)
+            except Exception:
+                pass
             raise HTTPException(status_code=500, detail=str(e))
 
     async def prepare_send_conversation(self):
@@ -326,18 +349,29 @@ class ChatService(AuthMixin, ModelMixin, FileMixin):
 
         # client_contextual_info：token 级稳定（首选）；同账号多次请求保持一致，避免抖动暴露自动化
         ctx_info = None
+        pace_range = None
         try:
             if enable_antiban:
                 from utils.antiban import fingerprint as _fp_mod
+                # H3 双保险：即使上游 acquire_context 未触发，也保证扩展字段齐全
+                _fp_mod.ensure_extended(self.req_token)
                 ctx_info = _fp_mod.get_contextual_info(self.req_token)
+                pace_range = _fp_mod.get_user_pace_range(self.req_token)
         except Exception:
             ctx_info = None
+            pace_range = None
+
+        # M1: time_since_loaded 按 user_pace 抽样（fast/normal/slow），同账号节奏一致
+        if pace_range:
+            time_since_loaded = random.randint(pace_range[0], pace_range[1])
+        else:
+            time_since_loaded = random.randint(3000, 30000)
 
         if ctx_info:
-            # 真实浏览器的 time_since_loaded 是秒级（用户读题、思考、打字），不是 50-500ms
+            # is_dark_mode 不再硬编码 False，改为 token 级稳定的 color_scheme 派生（约 30% 用户偏好暗色）
             client_contextual_info = {
-                "is_dark_mode": False,
-                "time_since_loaded": random.randint(3000, 30000),
+                "is_dark_mode": ctx_info.get("color_scheme") == "dark",
+                "time_since_loaded": time_since_loaded,
                 "page_height": ctx_info["page_height"],
                 "page_width": ctx_info["page_width"],
                 "pixel_ratio": ctx_info["pixel_ratio"],
@@ -348,7 +382,7 @@ class ChatService(AuthMixin, ModelMixin, FileMixin):
             # antiban 未启用：保持原行为但修正 pixel_ratio 取真实值（1.0/2.0 而非 1.5）
             client_contextual_info = {
                 "is_dark_mode": False,
-                "time_since_loaded": random.randint(3000, 30000),
+                "time_since_loaded": time_since_loaded,
                 "page_height": random.randint(700, 1200),
                 "page_width": random.randint(1200, 2000),
                 "pixel_ratio": random.choice([1.0, 2.0]),
@@ -461,6 +495,11 @@ class ChatService(AuthMixin, ModelMixin, FileMixin):
         except HTTPException as e:
             raise HTTPException(status_code=e.status_code, detail=e.detail)
         except Exception as e:
+            # M3: send_conversation transport 层失败也上报，三次连续将触发桶降级
+            try:
+                await antiban.report_network_error(self.antiban_ctx, type(e).__name__)
+            except Exception:
+                pass
             raise HTTPException(status_code=500, detail=str(e))
 
     async def close_client(self):

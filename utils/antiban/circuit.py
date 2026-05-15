@@ -22,6 +22,11 @@ from utils.Logger import logger
 _write_lock = threading.Lock()
 
 _account_backoff_level = {}  # token -> 0..N
+_bucket_network_errors = {}  # bucket_id -> 连续网络层错误计数（连接超时/拒绝/DNS）
+
+# 同一桶连续网络层错误阈值；达到后降级 300s（代理本身可能挂了）
+_NETWORK_ERROR_THRESHOLD = 3
+_NETWORK_ERROR_COOLDOWN = 300
 
 
 def _persist_dead() -> None:
@@ -114,6 +119,31 @@ def handle_response_success(token: str) -> None:
     if not configs.enable_antiban:
         return
     reset_backoff(token)
+
+
+def handle_network_error(token: str, bucket_id: Optional[str], error_kind: str = "") -> None:
+    """M3: 网络层错误（连接被拒/超时/DNS 失败）连续 N 次 → 标记代理桶不健康。
+
+    与 handle_response_error 区分：那是 HTTP 状态码，这是 transport 失败。
+    """
+    if not configs.enable_antiban or not bucket_id:
+        return
+    count = _bucket_network_errors.get(bucket_id, 0) + 1
+    _bucket_network_errors[bucket_id] = count
+    if count >= _NETWORK_ERROR_THRESHOLD:
+        _bucket.degrade_bucket(bucket_id, _NETWORK_ERROR_COOLDOWN)
+        _cooldown_bucket_accounts(bucket_id, _NETWORK_ERROR_COOLDOWN)
+        _bucket_network_errors[bucket_id] = 0
+        logger.warning(
+            f"[antiban] bucket {bucket_id} degraded due to {_NETWORK_ERROR_THRESHOLD}x network errors "
+            f"(last={error_kind or 'unknown'})"
+        )
+
+
+def reset_network_errors(bucket_id: Optional[str]) -> None:
+    """成功响应后清空网络错误计数。"""
+    if bucket_id and bucket_id in _bucket_network_errors:
+        _bucket_network_errors.pop(bucket_id, None)
 
 
 async def scheduled_heal() -> None:

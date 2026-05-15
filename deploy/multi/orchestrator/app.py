@@ -1838,7 +1838,7 @@ def _gen_librechat_yaml(rows: list[dict], gateway_origin: str) -> str:
         base = f"{gateway_origin}/{prefix}/v1" if prefix else r.get("base_url", "")
         auth = r.get("authorization", "")
         models = [m.get("id") for m in r.get("models", []) if isinstance(m, dict) and m.get("id")]
-        models_csv = ", ".join(f'"{m}"' for m in models) or '"gpt-4o-mini"'
+        models_csv = ", ".join(f'"{m}"' for m in models) or '"gpt-5-5"'
         lines.extend([
             f"    - name: \"chat2api-{r['slug']}\"",
             f"      apiKey: \"{auth}\"",

@@ -11,4 +11,4 @@
 总开关：ENABLE_ANTIBAN（默认 False）。未启用时本模块不影响任何现有流程。
 """
 
-from utils.antiban.guard import acquire_context, report_error, report_success, init, sniff_account_warning  # noqa: F401
+from utils.antiban.guard import acquire_context, report_error, report_network_error, report_success, init, sniff_account_warning  # noqa: F401
