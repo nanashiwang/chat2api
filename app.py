@@ -37,6 +37,7 @@ security_scheme = HTTPBearer()
 from app import app
 
 import api.chat2api
+import api.image_generations
 import gateway.admin
 
 if enable_gateway:
